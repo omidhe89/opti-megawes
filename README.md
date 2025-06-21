@@ -7,7 +7,7 @@ and lemniscate (figure-eight) paths. The AWES model is based on the model used i
 the performance and control of an AWES with a forty-meter wing span aircraft. A minimal coordinate model, in which the aircraft is represented by Euler angles, is 
 utilized, and the position propagation of the system is described in spherical coordinates. Additionally, a Penalty-based Interior-Point Homotopy (PIPH) approach, similiar to **AWEBOX [2]** is 
 adopted to increase the efficiency and robustness of solving the OCP. The tool offers different aerodynamic modelling options. These options correspond to the manner 
-by which the multiple aerodynamic coefficients are computed, including the **Vortex Lattice Method (VLM)[3]**, **Actuator Line Method (ALM) in Large Eddy simulation [4] **, and using 
+by which the multiple aerodynamic coefficients are computed, including the **Vortex Lattice Method (VLM)[3]**, **Actuator Line Method (ALM) in Large Eddy simulation [4]**, and using 
 **body resolved Computational Fluid Dynamics (CFD) [5]**.
 
 ## Prerequisites
