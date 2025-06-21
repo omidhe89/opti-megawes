@@ -1,2 +1,2 @@
 # opti-megawes
-An optimization framework for path planning of Mega-watt order airborne wind energy system 
+An Optimization Framework for Path Planning of Megawatt-Scale Airborne Wind Energy Systems.
