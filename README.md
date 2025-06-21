@@ -18,14 +18,17 @@ CasADi: A symbolic framework for numeric optimization. You will need to install 
 Once the .zip file is downloaded from the mentioned webpage, extract the contents onto a desired folder.
 Navigate to that folder in MATLAB and execute the following commands in MATLAB Command Window:
 
+```matlab
 addpath(genpath('<path to the folder in which CasADi files are extracted to>'));
 import casadi.*;
+```
 
 To check CasADi installation, try executing the following lines in the MATLAB Command Window:
 
+```matlab
 x = MX.sym('x')
 disp(jacobian(sin(x),x))
-
+```
 If any error is thrown, this implies an irregular installation of CasADi, and the user is advised to follow the above instructions again closely. Also, please keep in mind that CasADi 
 might have to be imported to MATLAB every time MATLAB is restarted, depending on the user's system settings.
 	
