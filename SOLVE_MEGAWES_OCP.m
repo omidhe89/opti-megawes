@@ -62,7 +62,7 @@ baseWindDir = pi;       % radians, wind direction. Pi (180 degrees) means
 % Simulation and Path Parameters
 % Note: The circle flies counter-clockwise
 params_num.sim.ablation_study = 0;      % 0: flexible tether, 1: rigid tether
-path_type = 0;          % Defines the desired flight path geometry.
+path_type = 8;          % Defines the desired flight path geometry.
                         % 0: circular path, 8: lemniscate (figure-eight) path.
 init_path_radius = 220; % m, initial radius for path generation (for both circle and lemniscate).
 params_num.sim.path_type = path_type;

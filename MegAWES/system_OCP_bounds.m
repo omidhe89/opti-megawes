@@ -200,7 +200,7 @@ pos_W_x_min = 0;                    pos_W_x_max = 1000;
 if params_num.sim.path_type == 0
     pos_W_y_min = -250;             pos_W_y_max = 250;  % circular trajectory 
 else
-    pos_W_y_min = -400;             pos_W_y_max = -400; % lemniscate trajectory
+    pos_W_y_min = -400;             pos_W_y_max = 400; % lemniscate trajectory
 end
 pos_W_z_min = 150;                  pos_W_z_max = 600;
 
