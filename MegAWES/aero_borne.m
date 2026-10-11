@@ -17,7 +17,7 @@
 % Date: June 12, 2025
 % Last Modified: June 12, 2025
 
-function [F_aero_B, M_aero_B, AeroAngels] = aero_borne(omega_OB_B, v_a_W, alpha, beta, rho_factor, deflection_act, params_sym)
+function [F_aero_B, M_aero_B, AeroAngels] = aero_borne(omega_OB_B, v_a, alpha, beta, rho_factor, deflection_act, params_sym)
     % AERO_BORNE Calculates aerodynamic forces and moments on the airborne system.
     %
     % This function serves as a wrapper to prepare inputs for the core
@@ -29,7 +29,7 @@ function [F_aero_B, M_aero_B, AeroAngels] = aero_borne(omega_OB_B, v_a_W, alpha,
     %   omega_OB_B      - Vector (3x1), Angular velocity of the body frame 'B'
     %                     relative to the orientation frame 'O', expressed in body coordinates (rad/s).
     %                     [p; q; r] in aerospace convention.
-    %   v_a_W           - Vector (3x1), Apparent wind velocity vector in the wind frame (m/s).
+    %   v_a             - Scalar, Magnitude of the apparent wind velocity (m/s).
     %   alpha           - Scalar, Angle of attack (rad).
     %   beta            - Scalar, Sideslip angle (rad).
     %   rho_factor      - Scalar, Factor for air density variation (e.g., due to altitude).
@@ -54,8 +54,7 @@ function [F_aero_B, M_aero_B, AeroAngels] = aero_borne(omega_OB_B, v_a_W, alpha,
     c = params_sym.kite.c; % Mean aerodynamic chord
 
 
-    % Calculate the magnitude of the apparent wind velocity.
-    v_a = norm(v_a_W);
+   
 
     % Assemble all necessary inputs for the aerodynamic model into a structure.
     % These inputs include aerodynamic angles, body rates (normalized), and control deflections.
@@ -83,11 +82,11 @@ function [F_aero_B, M_aero_B, AeroAngels] = aero_borne(omega_OB_B, v_a_W, alpha,
     stab_derivs.Cn = params_sym.kite.Cn;
 
     % Call the core aerodynamic calculation function.
-    [F_aero_B, M_aero_B, AeroAngels] = BORNE_Aerodynamics(v_a_W, inputs, stab_derivs, rho_factor, params_sym);
+    [F_aero_B, M_aero_B, AeroAngels] = BORNE_Aerodynamics(v_a, inputs, stab_derivs, rho_factor, params_sym);
 end
 
 
-function [F_a_B, M_a_B, AeroAngels] = BORNE_Aerodynamics(v_a_W, inputs, stab_derivs, rho_factor, params_sym)
+function [F_a_B, M_a_B, AeroAngels] = BORNE_Aerodynamics(v_a, inputs, stab_derivs, rho_factor, params_sym)
     % BORNE_AERODYNAMICS Calculates aerodynamic forces and moments based on stability derivatives.
     %
     % This function computes the aerodynamic coefficients for forces (CX, CY, CZ)
@@ -97,7 +96,7 @@ function [F_a_B, M_a_B, AeroAngels] = BORNE_Aerodynamics(v_a_W, inputs, stab_der
     % and dynamic pressure to calculate the total forces and moments.
     %
     % Inputs:
-    %   v_a_W       - Vector (3x1), Apparent wind velocity vector in the wind frame (m/s).
+    %   v_a         - Scalar, Magnitude of the apparent wind velocity (m/s).
     %   inputs      - struct, Contains all aerodynamic inputs:
     %                 inputs.zero, inputs.alpha, inputs.beta, inputs.p, inputs.q, inputs.r,
     %                 inputs.delta_a, inputs.delta_e, inputs.delta_r.
@@ -155,7 +154,7 @@ function [F_a_B, M_a_B, AeroAngels] = BORNE_Aerodynamics(v_a_W, inputs, stab_der
 
     % Calculate the effective dynamic pressure times reference area (q_eff).
     % This term converts non-dimensional aerodynamic coefficients into dimensional foces/moments.
-    q_eff = 0.5 * rho * (v_a_W' * v_a_W) * s_ref;
+    q_eff = 0.5 * rho * v_a^2 * s_ref;
 
     % Calculate total aerodynamic forces in the body frame.
     % CX, CY, CZ are body-axis force coefficients.

@@ -55,7 +55,7 @@ import casadi.*
 
 %% Set Simulation and Model Parameters
 % Define key numerical parameters for the MegAWES model and the OCP simulation.
-baseWindSpeed = 15;     % m/s, reference wind speed at a specific altitude. 
+baseWindSpeed = 12;     % m/s, reference wind speed at a specific altitude. 
 baseWindDir = pi;       % radians, wind direction. Pi (180 degrees) means
                         % wind flows along the positive x-axis in a standard Cartesian coordinate system.
 
@@ -66,7 +66,7 @@ path_type = 8;          % Defines the desired flight path geometry.
                         % 0: circular path, 8: lemniscate (figure-eight) path.
 init_path_radius = 220; % m, initial radius for path generation (for both circle and lemniscate).
 params_num.sim.path_type = path_type;
-params_num.sim.init_flight_speed = 85; % m/s, initial guess for the aircraft's flight speed.
+params_num.sim.init_flight_speed = 70; % m/s, initial guess for the aircraft's flight speed.
 params_num.sim.winding_number = 3; % cylces numbers ( Note: winding number for circles should be twice the size of lemniscates for comparison.) 
 
 % Calculate Estimated Final Time (Tf) for the flight trajectory.
@@ -78,15 +78,15 @@ disp(msg);
 % Determine the number of shooting nodes (discretization points) for the OCP.
 % This impacts the resolution and computational cost of the optimization.
 estimated_time_step = 0.5;
-params_num.sim.Nt = floor(params_num.sim.Tf / estimated_time_step) + floor(0.5 * params_num.sim.Tf / estimated_time_step) + 1;
+params_num.sim.Nt = floor(params_num.sim.Tf / estimated_time_step) + floor(0.75 * params_num.sim.Tf / estimated_time_step) + 1;
 msg = sprintf("the proposed shooting nodes for flight is: %0.5g", params_num.sim.Nt);
 disp(msg);
 
 params_num.sim.single_reel_out_activated = 1; % Reel-out strategy:
                                               % 0: multiple reel-out phases, 1: single reel-out phase.
-params_num.sim.reel_out_time = 0.7; % Normalized time (0 to 1) at which reel-out occurs if single_reel_out_activated is 1.
+params_num.sim.reel_out_time = 0.725; % Normalized time (0 to 1) at which reel-out occurs if single_reel_out_activated is 1.
 
-params_num.sim.aero_model = 'ALM';  % Aerodynamic model choice for the kite:
+params_num.sim.aero_model = 'VLM';  % Aerodynamic model choice for the kite:
                                     % 'ALM' (Actuator Line Method),
                                     % 'VLM' (Vortex Lattice Method),
                                     % 'CFD' (Computational Fluid Dynamics),
@@ -96,7 +96,7 @@ params_num.sim.aero_model = 'ALM';  % Aerodynamic model choice for the kite:
 % 1: Aerodynamic control (direct manipulation of aerodynamic forces/moments).
 % 2: Fictitious control (abstract control inputs without direct physical mapping).
 % 3: Homotopy control (uses a continuation method to gradually solve the OCP).                                    
-params_num.ctrl_mode = 3;
+params_num.ctrl_mode = 1;
 % Homotopy parameters (if 'ctrl_mode' is 3).
 params_num.homotopy.phi_numbers = 3; % Number of homotopy steps for progressive optimization. (always 3)
 
@@ -113,6 +113,15 @@ tic
 %% Set OCP Variables Bounds
 % Define the lower and upper bounds for the decision variables (states, controls, and algebraic variables) in the Optimal Control Problem.
 ocp_bounds = system_OCP_bounds(params_num);
+
+% restrict system states and control iputs for control purposes
+% Define the lower and upper bounds for the decision variables (states, controls, and algebraic variables) in the Optimal Control Problem.
+ocp_bounds.u_L(8:10) = 0.7 * ocp_bounds.u_L(8:10); % 0.85
+ocp_bounds.u_U(8:10) = 0.7 * ocp_bounds.u_U(8:10); % 0.85
+ocp_bounds.x_L(6:8) = 0.85 * ocp_bounds.x_L(6:8); % 0.95
+ocp_bounds.x_U(6:8) = 0.85 * ocp_bounds.x_U(6:8); % 0.95
+ocp_bounds.x_L(9:10) = 0.825 * ocp_bounds.x_L(9:10); % 0.95   (9:10)
+ocp_bounds.x_U(9:10) = 0.825 * ocp_bounds.x_U(9:10); % 0.95   (9:10)  
 
 %% Build Symbolic System Dynamics and Cost Function
 % Define the symbolic equations governing the MegAWES system and the objective (cost) function to be minimized/maximized.

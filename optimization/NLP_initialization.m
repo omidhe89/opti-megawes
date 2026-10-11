@@ -61,7 +61,8 @@ function w0 = NLP_initialization(init_mode, symbolic_funcs, params_sym, params_n
     elseif params_num.ctrl_mode == 2
         ui = [ui(1,:); ui(2:end,:)];
     else
-        ui = [ui(1,:); ui(2:7,:); zeros(3, params_num.sim.Nt); ocp_bounds.u_U(11) .* ones(1, params_num.sim.Nt); ui(2:7,:)];
+        % zero propulsive force: path_init solved the controls with F_p_B = 0
+        ui = [ui(1,:); ui(2:7,:); zeros(3, params_num.sim.Nt); zeros(1, params_num.sim.Nt); ui(2:7,:)];
     end
 
     % Initialize homotopy parameters (phi_i).

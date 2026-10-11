@@ -41,6 +41,6 @@ function v_w_p = log_wind(z_pos, base_wind_speed, params_sym)
 
     % Calculate the wind speed at the given height (z_pos) using the logarithmic profile.
     % Make sure z_pos is not zero or less than z0 to avoid log(0) or log(negative) issues.
-    v_w_p = base_wind_speed .* (log10(z_pos / z0) / log10(z_ref / z0));
+    v_w_p = base_wind_speed .* (log(z_pos / z0) / log(z_ref / z0));
 
 end

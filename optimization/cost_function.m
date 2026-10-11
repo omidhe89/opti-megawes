@@ -64,9 +64,13 @@ import casadi.*
 beta_scaled = casadi.SX.sym('beta_scaled');     % Scaled sideslip angle.
 alpha_scaled = casadi.SX.sym('alpha_scaled');   % Scaled angle of attack.
 xi_scaled = casadi.SX.sym('xi_scaled', params_num.Nx); % Scaled reference state vector for tracking.
-omega_dot = casadi.SX.sym('omega_dot', 3);     % Angular acceleration vector (unscaled) for initial cost.
-lift_force = casadi.SX.sym('lift_force', 3);   % Lift force vector (unscaled) for tracking cost.
-winch_acc = casadi.SX.sym('winch_acc', 1);     % Winch acceleration (unscaled) for initial cost.
+omega_dot = casadi.SX.sym('omega_dot', 3);     % Angular acceleration vector (scaled) for initial cost.
+v_dot = casadi.SX.sym('v_dot', 3);     % linear acceleration vector (scaled) for initial cost.
+lift_force = casadi.SX.sym('lift_force', 1);   % Lift force vector (unscaled) for tracking cost.
+winch_acc = casadi.SX.sym('winch_acc', 1);     % Winch acceleration (scaled) for initial cost.
+k =  casadi.SX.sym('k', 1);     % Winch acceleration (scaled) for initial cost.
+thereshold =  casadi.SX.sym('thereshold', 1);     % Winch acceleration (scaled) for initial cost.
+
 
 % Extract actual (unscaled) variables from the input 'vars' struct.
 x = vars.x; % State vector
@@ -87,7 +91,7 @@ err = x - xi_scaled;
 if params_num.ctrl_mode == 3
     % In control mode 3, a linear penalty on the sum of homotopy parameters.
     % The coefficient 0.08 'turns on' this cost as phi increases.
-    cost_homotopy = 0.08 * ones(1, params_num.homotopy.phi_numbers) * phi;
+    cost_homotopy = 0.008 * ones(1, params_num.homotopy.phi_numbers) * phi;
 else
     % For other control modes, the homotopy cost is zero, implying no homotopy
     % continuation is being applied to guide the optimization based on phi.
@@ -95,28 +99,32 @@ else
 end
 
 % --- Initialization Cost Term ---
-cost_init = omega_dot' * 8.5 * diag([0.3525, 0.6525, 0.9525]) * omega_dot + ...
-            0.500 * beta_scaled^2 + ...
-            0.15000 * winch_acc^2;
+cost_init = omega_dot' * 15.5 * diag([1.3525, 1.3525, 1.5525]) * omega_dot + ...
+            v_dot' * 6.5 * diag([1.9525, 0.6525, 0.6525]) * v_dot + ...
+            5.500 * beta_scaled^2; % + 0.05000 * winch_acc^2;%  - 0.8* x(1)^2; + ...
+            % ;
 
 % --- Tracking Cost Term ---
-cost_tracking = err' * 10 * diag([0, 0.000, 0.000 * ones(1, 3), 0.000 * ones(1, 3), 0.000 * ones(1, 3), 0.51551, 0.510551, 0.52505]) * err - ...
-                (1 - phi(1)) * 2.5 * (lift_force_scaled' * lift_force_scaled);
+cost_tracking = err' * 2.05 * diag([0, 0.000, 0, 0.000 * ones(1, 2), 0.000 * ones(1, 3), 0.000 * ones(1, 3), 0.91551, 0.910551, 0.022505]) * err; %- ...
+                %(1 - phi(1)) * 3.5 * (lift_force_scaled' * lift_force_scaled);
 
+                
 % --- Power Cost Term ---
 % This term aims to maximize the generated power.
-cost_power = -1.05 * params_num.winch.radius * z(1) * x(2);
+P = params_num.winch.radius * z(1) * x(2);
+% P = u(1) * x(2);
+cost_power = -30 * P; %(1 - tanh(1.5*k - thereshold)) *
 
 % --- Total Objective Function (J) ---
-J = cost_init + phi(3) * cost_tracking + (1 - phi(3)) * (cost_power) + cost_homotopy;
+J = cost_init + phi(3) * cost_tracking + (1 - phi(2)) * (cost_power) + cost_homotopy;
 
 % Create a CasADi Function object for the cost.
 % This allows the cost function to be efficiently evaluated within the
 % optimization solver. The inputs and outputs are explicitly defined.
 cost = casadi.Function('cost', ...
-                       {x, z, u, alpha_scaled, beta_scaled, omega_dot, lift_force, winch_acc, phi, xi_scaled}, ...
+                       {x, z, u, alpha_scaled, beta_scaled, omega_dot, v_dot, lift_force, winch_acc, phi, xi_scaled, k, thereshold}, ...
                        {J}, ...
-                       {'x_unscaled', 'z_unscaled', 'u_unscaled', 'alpha_scaled', 'beta_scaled', 'omega_dot_unscaled', 'lift_force_unscaled', 'winch_acc_unscaled', 'phi_parameters', 'xi_scaled_reference'}, ...
+                       {'x_scaled', 'z_scaled', 'u_scaled', 'alpha_scaled', 'beta_scaled', 'omega_dot_scaled', 'v_dot_scaled', 'lift_force_unscaled', 'winch_acc_scaled', 'phi_parameters', 'xi_scaled_reference', 'k', 'thereshold'}, ...
                        {'J'}); % Output name for the objective function.
 
 end

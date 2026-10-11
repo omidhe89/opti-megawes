@@ -39,14 +39,15 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting(z, pos_and_veloc
 % Inputs:
 %   z               - CasADi SX variable (3x1), Algebraic variables:
 %                     z(1) - Tether tension at the ground station (initial guess).
-%                     z(2) - Azimuth angle of the tether at the ground station (initial guess).
-%                     z(3) - Elevation angle of the tether at the ground station (initial guess).
+%                     z(2) - Inclination of the ground segment from the vertical, in the x-z plane (rad).
+%                     z(3) - Out-of-plane (y) angle of the ground segment (rad).
 %   pos_and_velocity - CasADi SX variable (6x1), Contains:
 %                     pos_and_velocity(1:3) - Kite position vector in the world frame [x; y; z].
 %                     pos_and_velocity(4:6) - Kite velocity vector in the world frame [vx; vy; vz].
 %   tether_length   - CasADi SX variable (scalar), Total length of the tether.
 %   params_sym      - struct, CasADi symbolic parameters.
-%   Ns              - scalar (integer), Number of tether segments.
+%   Ns              - scalar (integer), Number of lumped tether masses. They split
+%                     the tether into Ns+1 segments (ground -> masses -> kite).
 %
 % Outputs:
 %   eq              - CasADi SX variable (3x1), Algebraic equation representing the
@@ -62,7 +63,7 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting(z, pos_and_veloc
     
     import casadi.*
     base_wind_speed = params_sym.env.wind.base_velocity;
-    Ls = tether_length/Ns;
+    Ls = tether_length/(Ns+1);
     mj = params_sym.tether.rho * Ls;
 
     E = params_sym.tether.E;
@@ -71,9 +72,16 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting(z, pos_and_veloc
     
     p = pos_and_velocity(1:3);
     v = pos_and_velocity(4:6);
+    p_hat = p./norm(p);
 
+    % The tether rotates with the kite (omega_t) while its material is reeled
+    % out radially at the kite's radial speed v_r. For steady omega_t and v_r
+    % a mass at pj has acceleration omega_t x (omega_t x pj) + 2*v_r*(omega_t x p_hat);
+    % the second (Coriolis) term is the same for every mass.
     omega_t = cross(p./(norm(p)^2),v);
-    
+    v_r = dot(v,p_hat);
+    a_cor = 2*v_r.*cross(omega_t,p_hat);
+
     Tn = z(1);
     theta = z(2);
     phi = z(3);
@@ -87,20 +95,23 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting(z, pos_and_veloc
 
     % First element from ground station (Ns)
     FT(:,Ns) = Tn.*[sin(theta)* cos(phi); sin(phi); cos(theta)*cos(phi)];
-    pj(:,Ns) = Ls.*[sin(theta)* cos(phi); sin(phi); cos(theta)*cos(phi)];
-    vj(:,Ns) = dot(v,p./norm(p)) .* (p./norm(p)) + cross(omega_t,pj(:,Ns));
-    aj(:,Ns) = cross(omega_t,cross(omega_t,pj(:,Ns)));
+    % the ground segment stretches under Tn like every other segment
+    pj(:,Ns) = (Tn/(E*A) + 1)*Ls.*[sin(theta)* cos(phi); sin(phi); cos(theta)*cos(phi)];
+    vj(:,Ns) = v_r .* p_hat + cross(omega_t,pj(:,Ns));
+    aj(:,Ns) = cross(omega_t,cross(omega_t,pj(:,Ns))) + a_cor;
     
     % Drag calculation first element
 %     H_rho = 8550; % in meters (8.55 km)
 %     rho_factor = exp(pj(3,Ns) / (2 * H_rho));
     rho_factor  = 1;
-    windVel(:,Ns) = [0; 0; log_wind(pj(3,Ns), base_wind_speed, params_sym)];
+    windVel(:,Ns) = [log_wind(pj(3,Ns), base_wind_speed, params_sym); 0; 0];
     v_a_p = vj(:,Ns) - windVel(:,Ns);
     v_a_p_t = dot((pj(:,Ns))/norm(pj(:,Ns)),v_a_p)*((pj(:,Ns))/norm(pj(:,Ns)));
     v_a_p_n = v_a_p - v_a_p_t;
     rho = params_sym.env.wind.rho * rho_factor;
-    Fd(:,Ns) = -0.5 * rho* Ls * params_sym.tether.d * params_sym.tether.cd * ...
+    % The two end masses (Ns and 1) carry 1.5*mj, i.e. also the half segment
+    % next to the ground/kite, so their drag acts on 1.5*Ls of tether as well.
+    Fd(:,Ns) = -0.5 * rho* 1.5*Ls * params_sym.tether.d * params_sym.tether.cd * ...
             norm(v_a_p_n) * v_a_p_n; % particle drag
 
 
@@ -116,19 +127,24 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting(z, pos_and_veloc
         l_i_1 = (norm(FT(:,i-1))/(E*A) + 1)*Ls;
         
         pj(:,i-1) = pj(:,i) + l_i_1.*(FT(:,i-1)/norm(FT(:,i-1)));       
-        vj(:,i-1) = dot(v,p./norm(p)) .* (p./norm(p)) + cross(omega_t,pj(:,i-1));
-        aj(:,i-1) = cross(omega_t,cross(omega_t,pj(:,i-1)));
+        vj(:,i-1) = v_r .* p_hat + cross(omega_t,pj(:,i-1));
+        aj(:,i-1) = cross(omega_t,cross(omega_t,pj(:,i-1))) + a_cor;
         
         % Drag calculation
 %         rho_factor = exp(pj(3,i) / (2 * H_rho));
         rho_factor = 1;
-        windVel(:,i) = [0; 0; log_wind(pj(3,i), base_wind_speed, params_sym)];
-        v_a_p = vj(:,i) - windVel(:,i);
+        windVel(:,i-1) = [log_wind(pj(3,i-1), base_wind_speed, params_sym); 0; 0];
+        v_a_p = vj(:,i-1) - windVel(:,i-1);
         v_a_p_t = dot((pj(:,i-1)-pj(:,i))/norm(pj(:,i-1)-pj(:,i)),v_a_p) * ...
                 ((pj(:,i-1)-pj(:,i))/norm(pj(:,i-1)-pj(:,i)));
         v_a_p_n = v_a_p - v_a_p_t;
         rho = params_sym.env.wind.rho * rho_factor;
-        Fd(:,i-1) = -0.5 * rho * Ls * params_sym.tether.d * params_sym.tether.cd * ...
+        if i-1 == 1
+            drag_length = 1.5*Ls; % kite-side end mass
+        else
+            drag_length = Ls;
+        end
+        Fd(:,i-1) = -0.5 * rho * drag_length * params_sym.tether.d * params_sym.tether.cd * ...
                 norm(v_a_p_n) * v_a_p_n; % particle drag
     end   
     T0 = (mj+0.5*mj).*aj(:,1) + FT(:,1) - Fd(:,1) + [0;0;(mj+0.5*mj)*g];

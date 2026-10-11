@@ -38,7 +38,7 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting_rigid(z, pos_and
 %                     pos_and_velocity(4:6) - Kite velocity vector in the world frame [vx; vy; vz].
 %   tether_length   - CasADi SX variable (scalar), Total length of the tether.
 %   params_sym      - struct, CasADi symbolic parameters.
-%   Ns              - scalar (integer), Number of tether segments.
+%   Ns              - scalar (integer), Number of tether masses (Ns+1 segments).
 %
 % Outputs:
 %   eq              - CasADi SX variable (3x1), Algebraic equation representing the
@@ -55,8 +55,9 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting_rigid(z, pos_and
 %                    Technology), which is also licensed under the Apache License, Version 2.0.
 
     import casadi.*
-    
-    Ls = tether_length/Ns;
+
+    % Ns masses -> Ns+1 segments (see tether_quasi_static_single_shooting.m)
+    Ls = tether_length/(Ns+1);
     mj = params_sym.tether.rho * Ls;
 
     E = params_sym.tether.E;
@@ -78,7 +79,7 @@ function [eq, T_kite, pj] = tether_quasi_static_single_shooting_rigid(z, pos_and
 
     % First element from ground station (Ns)
     FT(:,Ns) = Tn.*[sin(theta)* cos(phi); sin(phi); cos(theta)*cos(phi)];
-    pj(:,Ns) = Ls.*[sin(theta)* cos(phi); sin(phi); cos(theta)*cos(phi)];
+    pj(:,Ns) = (Tn/(E*A) + 1)*Ls.*[sin(theta)* cos(phi); sin(phi); cos(theta)*cos(phi)];
     vj(:,Ns) = dot(v,p./norm(p)) * (p./norm(p)) + cross(omega_t,pj(:,Ns));
     
 

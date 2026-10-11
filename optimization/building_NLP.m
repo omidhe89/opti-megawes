@@ -127,7 +127,7 @@ end
 Xk = MX.sym('X_0', Nx);
 w = {w{:}, Xk};
 if params_num.sim.single_reel_out_activated == 1
-    lbw = [lbw; [0; 0.5; zeros(Nx-2,1)]];
+    lbw = [lbw; [0; 0.505; zeros(Nx-2,1)]];
     ubw = [ubw; ones(Nx,1)];
 else
     lbw = [lbw; zeros(Nx,1)];
@@ -148,16 +148,24 @@ Zk_si = scaled_to_si(Zk, z_L, z_U);
 
 alg_eq = symbolic_funcs.tether_alg_equation(Xk_si, Zk_si, paramsColumnVec);
 
-g = {g{:}, vertcat(alg_eq)./ sqrt((z_U - z_L)/2)}; %
+g = {g{:}, vertcat(alg_eq)}; %
 lbg = [lbg; zeros(Nz,1)];
 ubg = [ubg; zeros(Nz,1)];
 equality = [equality; true(Nz, 1)];
 %
 % constrain the init position
-g = {g{:}, vertcat(Xk(12) - xi_scaled(12,1))}; 
-lbg = [lbg; -0.0000 * ones(1,1)]; 
-ubg = [ubg; 0.0000 * ones(1,1)]; 
-equality = [equality; [true(1,1)]];
+% g = {g{:}, vertcat(Xk(12) - xi_scaled(12,1))}; 
+% lbg = [lbg; -0.0000 * ones(1,1)]; 
+% ubg = [ubg; 0.0000 * ones(1,1)]; 
+% equality = [equality; [true(1,1)]];
+% g = {g{:}, vertcat(Xk(13) - xi_scaled(13,1))}; 
+% lbg = [lbg; -0.0000 * ones(1,1)]; 
+% ubg = [ubg; 0.0000 * ones(1,1)]; 
+% equality = [equality; [true(1,1)]];
+% g = {g{:}, vertcat(Xk(14) - xi_scaled(14,1))}; 
+% lbg = [lbg; -0.0000 * ones(1,1)]; 
+% ubg = [ubg; 0.0000 * ones(1,1)]; 
+% equality = [equality; [true(1,1)]];
 
 
 % Define time as a decision variable (to be optimized)
@@ -172,7 +180,10 @@ Xi = X0;
 Zi = Zk;
 J = 0;   % running cost
 E = 0;   % mechanical energy E(T)/T -> terminal cost
-
+E_rms = 0;
+P_sum = 0;
+P_sumSq = 0;
+Jp = 0;
 for k=0:N-1
 
     % New NLP variable for the control
@@ -186,8 +197,8 @@ for k=0:N-1
     Xk = MX.sym(['X_' num2str(k+1)],Nx);
     w = {w{:}, Xk};
     if params_num.sim.single_reel_out_activated == 1
-        if  k <= floor(params_num.sim.reel_out_time*params_num.sim.Nt) % note >= Just here !
-            lbw = [lbw; [0; 0.50; zeros(Nx-2,1)]];
+        if  k <= floor(params_num.sim.reel_out_time * params_num.sim.Nt) % note >= Just here !
+            lbw = [lbw; [0; 0.505; zeros(Nx-2,1)]];
             ubw = [ubw; ones(Nx,1)];
         else
             lbw = [lbw; zeros(Nx,1)];
@@ -205,38 +216,51 @@ for k=0:N-1
     ubw = [ubw;  ones(Nz,1)];
     w0 = [w0;  zi_scaled(:,k+2)];
 
-    [Pk, omega_dot, lift_force, winch_acc, alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h);
+    [Pk, omega_dot, v_dot, lift_force, winch_acc, alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h);
 
     % cost function
     beta_scaled = si_to_scaled(beta, ocp_bounds.beta_min, ocp_bounds.beta_max);
     alpha_scaled = si_to_scaled(alpha, ocp_bounds.alpha_min, ocp_bounds.alpha_max);
-    J =  J +  h .* symbolic_funcs.cost(Xk, Zk, Uk, alpha_scaled, beta_scaled, omega_dot, lift_force, winch_acc, Phi, xi_scaled(:,k+2));
+    J =  J +  h .* symbolic_funcs.cost(Xk, Zk, Uk, alpha_scaled, beta_scaled, omega_dot, v_dot, lift_force, winch_acc, Phi, xi_scaled(:,k+2), k, floor(params_num.sim.reel_out_time*params_num.sim.Nt));
     E = E + h * Pk;
+%     E_rms = E_rms + h * Pk^2;
 
-    % Ready for the next time step
+    if k > 1 && k <= floor(params_num.sim.reel_out_time*params_num.sim.Nt)
+        dP = (Pk - P_prev)/h;
+        Jp = Jp + dP^2;
+    end
+%     if  k <= floor(params_num.sim.reel_out_time*params_num.sim.Nt) && mod(k, 5) == 0 
+%         P_sum  = P_sum +  Pk;
+%         P_sumSq = P_sumSq + Pk^2;
+%     end
     X0 = Xk;
+    P_prev = Pk;
+    if k ==1 
+        P_0 = P_prev;
+    end
 end
-
+% P_count = floor(floor(params_num.sim.reel_out_time*params_num.sim.Nt)/5) + 1;
+% P_mean = P_sum / P_count;
+% P_var  = (P_sumSq / P_count) - P_mean^2;
 % add mayer cost function (energy and time)
-J = (J - 15 * (1 - Phi(3)) * E + 0.25 * (1 - Phi(3)) * (T_sim - params_num.sim.Tf)^2 )/ (N); % add terminal cost
+J = J - 90.10 * (1-Phi(3))* E + 180 * (1 - Phi(2)) * Jp + 10.25 * (T_sim - params_num.sim.Tf)^2; % add terminal cost
 
 % periodicty constraint
 if params_num.sim.path_type == 8
     % To fly lemniscate
     g = {g{:}, vertcat(Xk - Xi)};
-    lbg = [lbg; [zeros(14,1)]];
-    ubg = [ubg; [zeros(14,1)]];
-    equality = [equality; true(14, 1)];
+    lbg = [lbg; [zeros(Nx,1)]];
+    ubg = [ubg; [zeros(Nx,1)]];
+    equality = [equality; true(Nx, 1)];
 else
     % To fly circule
     g = {g{:}, (vertcat(Xk(1:10) - Xi(1:10), Xk(11) - (si_to_scaled(scaled_to_si(Xi(11),x_L(11),x_U(11)) - 2*pi*params_num.sim.winding_number,x_L(11),x_U(11))) , Xk(12:end) - Xi(12:end)))}; % CCW
 %      g = {g{:}, (vertcat(Xk(1:10) - Xi(1:10), Xk(11) - (si_to_scaled(scaled_to_si(Xi(11),x_L(11),x_U(11)) + 2*pi*params_num.sim.winding_number,x_L(11),x_U(11))) , Xk(12:end) - Xi(12:end)))}; %CW
-    lbg = [lbg; [zeros(14,1)]];
-    ubg = [ubg; [zeros(14,1)]];
-    equality = [equality; [true(14, 1)]];
+    lbg = [lbg; [zeros(Nx,1)]];
+    ubg = [ubg; [zeros(Nx,1)]];
+    equality = [equality; [true(Nx, 1)]];
 end
 
-%
 w = {w{:},  T};
 lbw = [lbw; 0];
 ubw = [ubw; 1];

@@ -17,7 +17,7 @@
 % Date: June 12, 2025
 % Last Modified: June 12, 2025
 
-function MeanWind_W = wind_shear(DCM, altitude, params_sym)
+function MeanWind_B = wind_shear(DCM, pos_W, params_sym)
     % WIND_SHEAR Calculates the mean wind vector in the World frame, considering wind shear.
     %
     % This function computes the local mean wind velocity at a given altitude,
@@ -27,30 +27,24 @@ function MeanWind_W = wind_shear(DCM, altitude, params_sym)
     % Inputs:
     %   DCM         - Rotation matrix (3x3) from the World frame to the body reference frame.
     %                
-    %   altitude    - Scalar, The altitude (height above ground) at which to calculate
-    %                 the wind speed. Please note that in some conventions, altitude
-    %                 might be `-Pos_O(3)` if `Pos_O(3)` is the Z-coordinate in a
-    %                 North-East-Down (NED) or similar frame. Ensure `altitude` is positive upwards.
-    %   params_sym  - struct, Symbolic parameters.
+    %   pos_W       - Vector (3x1), Position in the World frame. The Z-coordinate (pos_W(3))
+    %                 represents the altitude (height above ground).
+    %   params_sym  - struct, Symbolic parameters containing wind properties (base velocity,
+    %                 direction, shear parameters, etc.).
+
     %
     % Outputs:
-    %   MeanWind_W  - Vector (3x1), The mean wind velocity vector at the specified
-    %                 altitude, expressed in the World (global) coordinate frame [vx_W; vy_W; vz_W].
+    %   MeanWind_B  - Vector (3x1), The mean wind velocity vector at the specified
+    %                 altitude, expressed in the Body (local) coordinate frame [vx_B; vy_B; vz_B].
 
     % Extract base wind speed and direction from symbolic parameters.
     base_wind_speed = params_sym.env.wind.base_velocity;
     wind_direction = params_sym.env.wind.direction;
+    altitude = pos_W(3); % Altitude of the kite (assuming pos_W(3) = -pos_O(3) is Z-coordinate in ground frame)
 
-   
-    BaseWind = -base_wind_speed .* [cos(wind_direction); sin(wind_direction); 0];
 
     % Apply the logarithmic wind shear model to get the wind speed at the given altitude.
-    % The `log_wind` function should compute the wind velocity magnitude based on altitude
-    % and then potentially orient it.
-    % Note: The `log_wind` function signature usually takes `altitude` and `base_wind_speed`
-    Windspeed_altitude = log_wind(altitude, BaseWind, params_sym);
-    MeanWind_O = -1 .* (DCM' * Windspeed_altitude);
-
-    % Apply a final transformation from the intermediate 'O' frame to the World 'W' frame
-    MeanWind_W = transformFromOtoW(wind_direction, MeanWind_O);
+    Windspeed_altitude = log_wind(altitude, base_wind_speed, params_sym);
+    Windspeed = Windspeed_altitude .* [cos(wind_direction); sin(wind_direction); 0];
+    MeanWind_B = DCM' * Windspeed;
 end

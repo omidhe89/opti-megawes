@@ -75,10 +75,10 @@ function [kite_data, tether_dynamics, tether_alg_equation, kite_dynamics, winch_
     % 'v_k_W': Kite velocity relative to winch in wind frame.
     % 'M_OB': Rotation matrix from body frame to ground frame.
     % 'v_k_tau': Kite velocity in tangentional refernce frame (for more info refer to Sebastian Rapp's theis).
-    [pos_O, pos_W, v_k_W, M_OB, v_k_tau] = estimations_ap4(x, params_sym);
+    [pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O] = estimations_ap4(x, params_sym);
     % Create a CasADi Function for these kite data outputs
-    kite_data = Function('kite_data', {x, params_array_values}, {pos_O, pos_W, v_k_W, M_OB, v_k_tau}, ...
-                         {'x', 'p'}, {'pos_O', 'pos_W', 'v_k_W', 'M_OB', 'v_k_tau'});
+    kite_data = Function('kite_data', {x, params_array_values}, {pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O}, ...
+                         {'x', 'p'}, {'pos_O', 'pos_W', 'v_k_W', 'M_OB', 'v_k_tau', 'v_k_O'});
 
     % --- Tether Dynamics ---
     % Calculate tether tension and other related quantities.
@@ -115,20 +115,23 @@ function [kite_data, tether_dynamics, tether_alg_equation, kite_dynamics, winch_
 
     % --- Aerodynamics Variables and Model Selection ---
     % Calculate aerodynamic relevant variables such as apparent wind speed, angle of attack, and sideslip angle.
-    altitude = -pos_O(3); % Altitude of the kite (assuming pos_O(3) is Z-coordinate in ground frame)
-
     % Calculate wind velocity at kite's position
-    v_w_W = wind_shear(M_OB, altitude, params_sym); % Wind velocity in world frame
-    v_a_W = v_k_W - v_w_W; % Apparent wind velocity in world frame
-    Va    = norm(v_a_W);   % Apparent wind speed
+    v_w_B = wind_shear(M_OB, pos_W, params_sym); % Wind velocity in body frame
+    v_w_O = M_OB * v_w_B; % Wind velocity in O frame (intermediate frame aligned with wind)
+    v_w_W = transformFromOtoW(params_sym.env.wind.direction, v_w_O); % Wind velocity in wind frame
+    v_a_W = v_k_W - v_w_W; % Apparent wind velocity in wind frame
+  
 
     % Transform apparent wind velocity to kite body frame for angle calculations
-    v_a_O = transformFromWtoO(params_sym.env.wind.direction, v_a_W); 
-    v_a_B = M_OB' * v_a_O; 
+    % v_a_O = transformFromWtoO(params_sym.env.wind.direction, v_a_W); 
+    % v_a_B = M_OB' * v_a_O; 
+    v_a_B = x(3:5) - v_w_B; % Apparent wind velocity in body frame, including kite's own velocity - wind velocity in body frame
+    Va    = norm(v_a_B);   % Apparent wind speed
 
     % Calculate angle of attack (alpha) and sideslip angle (beta)
     alpha = (atan2( v_a_B(3), v_a_B(1) )); % Angle of attack
-    beta  = (atan2( v_a_B(2), v_a_B(1) )); % Sideslip angle
+%     beta  = (atan2( v_a_B(2), v_a_B(1) )); % Sideslip angle
+    beta = asin( v_a_B(2) / Va ); % Sideslip angle
 
     % Air density factor (currently fixed to 1, could incorporate altitude effects)
     % H_rho = 8550; % in meters (8.55 km) - typical scale height for air density
@@ -142,15 +145,15 @@ function [kite_data, tether_dynamics, tether_alg_equation, kite_dynamics, winch_
     % Select and call the appropriate aerodynamic force and moment model
     if strcmp(params_num.sim.aero_model, 'MegAWES')
         % Use the 'MegAWES' detailed aerodynamic model
-        [F_a_B_expr, M_a_B_expr, AeroAngels_deg] = aero_MegAWES(x(6:8), v_a_W, alpha, beta, rho_factor, deflections, params_sym);
+        [F_a_B_expr, M_a_B_expr, AeroAngels_deg] = aero_MegAWES(x(6:8), Va, alpha, beta, rho_factor, deflections, params_sym);
     else
         % Use the 'BORNE' (or simplified) aerodynamic model based on coefficients
-        [F_a_B_expr, M_a_B_expr, AeroAngels_deg] = aero_borne(x(6:8), v_a_W, alpha, beta, rho_factor, deflections, params_sym);
+        [F_a_B_expr, M_a_B_expr, AeroAngels_deg] = aero_borne(x(6:8), Va, alpha, beta, rho_factor, deflections, params_sym);
     end
 
     % Create a CasADi Function for the aerodynamic forces and moments,
     % which depend on states (x), control deflections (u), and parameters (p).
-    F_M_aero = Function('aero_model', {x, deflections, params_array_values}, {F_a_B_expr, M_a_B_expr}, ...
+   F_M_aero = Function('aero_model', {x, deflections, params_array_values}, {F_a_B_expr, M_a_B_expr}, ...
                         {'x', 'u', 'p'}, {'F_aero_B', 'M_aero_B'});
 
 end % End of function build_dynamics

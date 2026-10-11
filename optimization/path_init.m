@@ -53,8 +53,8 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     % Define the center of the initial trajectory in a plane
     % The trajectory will be generated in a plane that is parallel to the yz-plane
     % of a local frame, then rotated and translated.
-    circOffset = 350; % Z-offset from ground (m)
-    x_offset = 500;   % X-offset from origin (m)
+    circOffset = 300; % Z-offset from ground (m)
+    x_offset = 400;   % X-offset from origin (m)
     el0 = 0 * pi/180; % Initial elevation angle for rotation
     circOrigin_W = [x_offset; 0; circOffset]; % Origin of the circular/lemniscate path in World frame
 
@@ -75,7 +75,7 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     % Choose path type (lemniscate or circle)
     if params_num.sim.path_type == 8 % Lemniscate (figure-eight) path
         [POS_W, VEL_W] = build_leminscate(); % Get CasADi functions for lemniscate
-        phi_0 = 2 * pi / 4; % Initial phase angle for the lemniscate
+        phi_0 = 1 * pi / 4; % Initial phase angle for the lemniscate
 
         % Populate position and velocity for each time point
         for i = 1:length(t)
@@ -84,7 +84,7 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
         end
     else % Default to circular path
         [POS_W, VEL_W] = build_circle(); % Get CasADi functions for circle
-        phi_0 = 4 * pi / 4; % Initial phase angle for the circle
+        phi_0 = -1 * pi / 4; % Initial phase angle for the circle
 
         % Populate position and velocity for each time point
         for i = 1:length(t)
@@ -115,6 +115,12 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     kiteOmega_OB_O = M_OW * omega_OB_W;
     
     yawResetCounter = 0; % Counter to handle yaw angle wrap-around for continuity
+
+    % The reeled-out (unstretched) tether length is the kite distance shortened by the
+    % elastic strain at the guessed winch tension, so the tether solve below starts
+    % from a taut tether that is consistent with the winch states.
+    tetherForceGuessAtWinch = 9.500e5; % A rough estimation for tether force at winch (N)
+    tetherStrainGuess = tetherForceGuessAtWinch / (params_num.tether.E * params_num.tether.A);
 
     % Pre-allocate arrays for efficiency
     kiteDist_tau = zeros(1, length(t));
@@ -169,7 +175,7 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
         velKiteInit_B(:, i) = rotMat_OB' * velKiteInit_O(:, i);
         
         % Calculate winch rotation angle and velocity
-        winchRotAngle(1, i) = (kiteDist_tau(i)) / params_num.winch.radius;
+        winchRotAngle(1, i) = kiteDist_tau(i) / (1 + tetherStrainGuess) / params_num.winch.radius;
         
         % Spherical coordinates transformation matrix for velocity
         sin_lat = sin(kiteLat(i));
@@ -186,7 +192,7 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
         % Transform kite velocity to tether-aligned frame
         velKiteInit_tau = rotMat_tauW * velKiteInit_W(:, i);
         % Winch rotation velocity derived from the z-component of velocity in tether-aligned frame
-        winchRotVel(1, i) = -velKiteInit_tau(3) / params_num.winch.radius;
+        winchRotVel(1, i) = -velKiteInit_tau(3) / (1 + tetherStrainGuess) / params_num.winch.radius;
 
         % Calculate tether azimuth and elevation angles (used for algebraic variable guess)
         tetherAzimuth(1, i) = asin(posKiteInit_W(2, i) / norm(posKiteInit_W(:, i)));
@@ -218,8 +224,6 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
                            'StepTolerance', 1e-10, 'FunctionTolerance', 1e-8, ...
                            'Display', 'none');
     
-    tetherForceGuessAtWinch = 9.00e5; % A rough estimation for tether force at winch (N)
-    
     % Initial guess for algebraic variables (tether force, elevation, azimuth)
     % using the first point's values.
     z0 = [tetherForceGuessAtWinch; tether_elevation(1); tetherAzimuth(1)];
@@ -229,7 +233,6 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     % Here: [winch_torque; Fx_aero; Fy_aero; Fz_aero; Mx_aero; My_aero; Mz_aero]
     u0 = [2e5; zeros(2, 1); -2e5; zeros(3, 1)]; % Example initialization
     
-    tether_tention = 30; % Placeholder value, likely a state or parameter
     numeric_tether_error = 0; % Accumulator for tether algebraic equation error
 
     % --- Loop through time steps to find initial guesses for algebraic and control variables ---
@@ -237,9 +240,7 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
         % For the first step (k=1), or if ablation study is active, use a specific z0.
         if k == 1
             % Create a MATLAB-compatible function handle for fsolve to solve tether algebraic equations
-            % Note: `xi(:,k) - [tether_tention; zeros(13,1)]` suggests that
-            % `tether_tention` assumig tether is under tension
-            f_tether_matlab = @(Z) full(tether_alg_equation(xi(:, k) - [tether_tention; zeros(13, 1)], Z, paramsColumnVec));
+            f_tether_matlab = @(Z) full(tether_alg_equation(xi(:, k), Z, paramsColumnVec));
             
             % Re-initialize z0 for each step if ablation study is active, or use previous solution.
             z0 = [tetherForceGuessAtWinch; tether_elevation(k); tetherAzimuth(k)];
@@ -248,8 +249,8 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
             [z0_star, ~, ~, ~] = fsolve(f_tether_matlab, z0, options);
             
             % Evaluate tether dynamics with the solved algebraic variables to get errors and forces
-            [alg_error, T_kite, ~] = tether_dynamics(xi(:, k) - [tether_tention; zeros(13, 1)], z0_star, paramsColumnVec);
-            
+            [alg_error, T_kite, ~] = tether_dynamics(xi(:, k), z0_star, paramsColumnVec);
+
             % Store tether forces (winch and kite)
             TetherForces.winch = z0_star(1);
             TetherForces.kite = full(T_kite);
@@ -266,11 +267,11 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
         end
         
         % Solve for algebraic variables using fsolve (hot start from z0 or cold start)
-        f_tether_matlab = @(Z) full(tether_alg_equation(xi(:, k) - [tether_tention; zeros(13, 1)], Z, paramsColumnVec));
+        f_tether_matlab = @(Z) full(tether_alg_equation(xi(:, k), Z, paramsColumnVec));
         [z0_star, ~, ~, ~] = fsolve(f_tether_matlab, z0, options);
         
         % Evaluate tether dynamics to check error and get forces
-        [alg_error, T_kite, ~] = tether_dynamics(xi(:, k) - [tether_tention; zeros(13, 1)], z0_star, paramsColumnVec);
+        [alg_error, T_kite, ~] = tether_dynamics(xi(:, k), z0_star, paramsColumnVec);
         numeric_tether_error = numeric_tether_error + norm(alg_error); % Accumulate error
 
         % Store tether forces
@@ -293,6 +294,8 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
         z0 = z0_star; % Use the last solved z_star as hot start
     end
     
+    % (the handle from the loop still points at node N)
+    f_tether_matlab = @(Z) full(tether_alg_equation(xi(:, N + 1), Z, paramsColumnVec));
     [z0_star, ~, ~, ~] = fsolve(f_tether_matlab, z0, options);
     [alg_error, T_kite, ~] = tether_dynamics(xi(:, end), z0_star, paramsColumnVec);
     zi = [zi (z0_star)]; 

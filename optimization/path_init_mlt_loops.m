@@ -79,6 +79,9 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
     t = (0:1/N:1)*Tf;
     kiteOmega_OB_O = M_OW * omega_OB_W;
     yawResetCounter = 0; % to make yaw rotation continuous
+    % unstretched tether length = kite distance shortened by the elastic strain at the guessed tension
+    tetherForceGuessAtWinch = 1.5e6; % a rough estimation about tether force value!
+    tetherStrainGuess = tetherForceGuessAtWinch / (params_num.tether.E * params_num.tether.A);
     for i=1:length(t)
          
         kiteDist_tau(i) = norm(posKiteInit_W(:,i),2);
@@ -119,7 +122,7 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
         kiteOmega_OB_B(:,i) = rotMat_OB' * kiteOmega_OB_O;
         velKiteInit_B(:,i) = rotMat_OB' * velKiteInit_O(:,i);
         
-        winchRotAngle(1,i) = (kiteDist_tau(i))/params_num.winch.radius;
+        winchRotAngle(1,i) = kiteDist_tau(i)/(1 + tetherStrainGuess)/params_num.winch.radius;
         sin_lat  = sin(kiteLat(i));
         sin_long = sin(kiteLong(i));
         cos_lat  = cos(kiteLat(i));
@@ -130,7 +133,7 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
                 -cos_lat*cos_long, -cos_lat*sin_long, -sin_lat];
 
         velKiteInit_tau = rotMat_tauW * velKiteInit_W(:,i);
-        winchRotVel(1,i) = -velKiteInit_tau(3) / params_num.winch.radius;
+        winchRotVel(1,i) = -velKiteInit_tau(3) / (1 + tetherStrainGuess) / params_num.winch.radius;
 
 
         % azithmuth and elevation angles to start finding algebric variables
@@ -157,8 +160,6 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
     zi = [];
     ui = [];
 
-    tetherForceGuessAtWinch = 1.5e6; % a rough estimation about tether force value! 
-
     keys = fieldnames(params_sym);
     params_num_array = [];
     for i = 1:length(keys)
@@ -175,7 +176,6 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
 
 %     zi = [zi z0];  
     u0 = [10e5; zeros(2,1); -5e5 ;zeros(3,1)];
-    tether_tention = 0;
     numeric_tether_error = 0;
 %     ui = [ui u0];
     for k = 1:N

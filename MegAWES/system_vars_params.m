@@ -137,9 +137,9 @@ params_num.env.wind.base_velocity = windSpeed;% Base wind velocity (numerical, m
 params_sym.env.wind.rho = SX.sym('wind_rho'); % Air density (symbolic).
 params_num.env.wind.rho = 1.225;              % Air density (numerical, kg/m^3).
 params_sym.env.wind.z0 = SX.sym('wind_z0');   % Surface roughness length (symbolic).
-params_num.env.wind.z0 = 0.002;               % Surface roughness length (numerical, m).
+params_num.env.wind.z0 = 2.67e-3;               % Surface roughness length (numerical, m).
 params_sym.env.wind.z_ref = SX.sym('wind_z_ref'); % Reference height for wind speed (symbolic).
-params_num.env.wind.z_ref = 100;              % Reference height for wind speed (numerical, m).
+params_num.env.wind.z_ref = 250;              % Reference height for wind speed (numerical, m).
 
 % Winch Parameters
 params_sym.winch.radius = SX.sym('winch_radius'); % Winch drum radius (symbolic).

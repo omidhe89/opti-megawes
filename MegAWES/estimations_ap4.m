@@ -1,4 +1,4 @@
-function [pos_O, pos_W, v_k_W, M_OB, v_k_tau] = estimations_ap4(x, params_sym)
+function [pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O] = estimations_ap4(x, params_sym)
 % ESTIMATIONS_AP4 Calculates kinematic estimations for the kite in different frames.
 %
 % Copyright (c) 2025 Omid Heydarnia
@@ -49,6 +49,7 @@ function [pos_O, pos_W, v_k_W, M_OB, v_k_tau] = estimations_ap4(x, params_sym)
 %   v_k_W      - CasADi SX variable (3x1), Kite kinematic velocity in the wind-fixed frame 'W'.
 %   M_OB       - CasADi SX variable (3x3), Rotation matrix from Body frame 'B' to Inertial frame 'O'.
 %   v_k_tau    - CasADi SX variable (3x1), Kite kinematic velocity in the tether frame 'tau'.
+%   v_k_O      - CasADi SX variable (3x1), Kite kinematic velocity in the wind-fixed frame 'O'.
 %
 % See also: build_dynamics, system_vars_params, transformFromWtoO
 

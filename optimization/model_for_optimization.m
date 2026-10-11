@@ -16,7 +16,7 @@
 % Date: June 14, 2025
 % Last Modified: June 14, 2025
 
-function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h)
+function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h)
 
 %
 % This function sets up the constraints for the nonlinear programming problem.
@@ -95,7 +95,7 @@ function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg
     % Get kite data and tether dynamics
     % pos_W: position of kite in wind frame
     % M_OB: rotation matrix from body frame to world frame
-    [~, pos_W, ~, M_OB, ~] = symbolic_funcs.kite_data(Xk_si, paramsColumnVec);
+    [~, pos_W, ~, M_OB, ~, ~] = symbolic_funcs.kite_data(Xk_si, paramsColumnVec);
     [alg_eq, T_kite, ~] = symbolic_funcs.tether_dynamics(Xk_si, Zk_si, paramsColumnVec);
     tether_forces.kite = T_kite;
     tether_forces.winch = Zk_si(1);
@@ -103,10 +103,10 @@ function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg
     % Constraints on kite position in the world frame
    
     % Note: The first position constraint on pos_W(1) is commented out.
-    % g = {g{:}, si_to_scaled(pos_W(1), pos_W_x_min, pos_W_x_max)};
-    % lbg = [lbg; 0];
-    % ubg = [ubg; 1];
-    % equality = [equality; false(1, 1)]; 
+    g = {g{:}, si_to_scaled(pos_W(1), pos_W_x_min, pos_W_x_max)};
+    lbg = [lbg; 0];
+    ubg = [ubg; 1];
+    equality = [equality; false(1, 1)]; 
                                      
 
     % Constraint on the y-position of the kite based on path type
@@ -130,14 +130,14 @@ function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg
         % Calculate angles (theta_kite, phi_kite) to avoid tether contact
         theta_kite = atan2(T_kite_B(3), T_kite_B(1)); % Angle in x-z plane
         g = {g{:}, si_to_scaled(theta_kite, 0, pi)};
-        lbg = [lbg; si_to_scaled(deg2rad(5), 0, pi)]; % 5 degrees
-        ubg = [ubg; si_to_scaled(deg2rad(175), 0, pi)]; % 175 degrees
+        lbg = [lbg; si_to_scaled(deg2rad(9.5), 0, pi)]; % 2.5 degrees
+        ubg = [ubg; si_to_scaled(deg2rad(170.5), 0, pi)]; % 177.5 degrees
         equality = [equality; false(1, 1)];
 
         phi_kite = atan2(T_kite_B(3), T_kite_B(2)); % Angle in y-z plane
         g = {g{:}, si_to_scaled(phi_kite, 0, pi)};
-        lbg = [lbg; si_to_scaled(deg2rad(5), 0, pi)]; % 5 degrees
-        ubg = [ubg; si_to_scaled(deg2rad(175), 0, pi)]; % 175 degrees
+        lbg = [lbg; si_to_scaled(deg2rad(15), 0, pi)]; % 2.5 degrees
+        ubg = [ubg; si_to_scaled(deg2rad(165), 0, pi)]; % 177.5 degrees
         equality = [equality; false(1, 1)];
     end
 
@@ -177,11 +177,11 @@ function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg
 
         % Enforce that F_aero_B and M_aero_B come from the aerodynamic model
         [F_a_B_expr,  M_a_B_expr] = symbolic_funcs.F_M_aero(Xk_si, cs_defl, paramsColumnVec);
-        g = {g{:}, (F_aero_B - F_a_B_expr)./ sqrt((u_U(2:4) - u_L(2:4))/2)}; % Force residuals
+        g = {g{:}, (F_aero_B - F_a_B_expr)./ abs((u_U(2:4) - u_L(2:4))/2)}; % Force residuals
         lbg = [lbg; zeros(3,1)];
         ubg = [ubg; zeros(3,1)];
         equality = [equality; true(3, 1)];
-        g = {g{:}, (M_aero_B - M_a_B_expr) ./ sqrt((u_U(5:7) - u_L(5:7))/2)}; % Moment residuals
+        g = {g{:}, (M_aero_B - M_a_B_expr) ./ abs((u_U(5:7) - u_L(5:7))/2)}; % Moment residuals
         lbg = [lbg; zeros(3,1)];
         ubg = [ubg; zeros(3,1)];
         equality = [equality; true(3, 1)];
@@ -212,12 +212,12 @@ function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg
 
         % Enforce that F_aero_B and M_aero_B come from the aerodynamic model
         [F_a_B_expr,  M_a_B_expr] = symbolic_funcs.F_M_aero(Xk_si, cs_defl, paramsColumnVec);
-        g = {g{:}, (F_aero_B - F_a_B_expr) ./ sqrt((u_U(12:14) - u_L(12:14))/2)}; % Force residuals
+        g = {g{:}, (F_aero_B - F_a_B_expr) ./ abs((u_U(12:14) - u_L(12:14))/2)}; % Force residuals
         lbg = [lbg; zeros(3,1)];
         ubg = [ubg; zeros(3,1)];
         equality = [equality; true(3, 1)];
 
-        g = {g{:}, (M_aero_B - M_a_B_expr) ./ sqrt((u_U(15:17) - u_L(15:17))/2)}; % Moment residuals
+        g = {g{:}, (M_aero_B - M_a_B_expr) ./ abs((u_U(15:17) - u_L(15:17))/2)}; % Moment residuals
         lbg = [lbg; zeros(3,1)];
         ubg = [ubg; zeros(3,1)];
         equality = [equality; true(3, 1)];
@@ -236,7 +236,10 @@ function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg
     % Constraint on translational acceleration magnitude
     trans_acc = rhs(3:5)' * rhs(3:5); % Squared magnitude of translational acceleration
     g = {g{:}, si_to_scaled(trans_acc, kite_acc_min, (kite_acc_max * params_num.env.g)^2)}; % Scaled constraint
-    lbg = [lbg; 0];
+    % No lower bound: trans_acc is a square, so a bound at 0 is vacuous, but IPOPT
+    % still puts a barrier on it, which degenerates wherever rhs(3:5) ~ 0 (e.g.
+    % steady circling, where the body-frame velocity is nearly constant).
+    lbg = [lbg; -inf];
     ubg = [ubg; 1];
     equality = [equality; false(1, 1)];
 
@@ -246,16 +249,19 @@ function [Pk, omega_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg
     g = {g{:}, winch_acc_scaled};
     lbg = [lbg; 0];
     ubg = [ubg; 1];
+    equality = [equality; false(1, 1)];
 
     % Combine algebraic and ordinary differential equation (ODE) constraints
     % These are equality constraints enforcing model dynamics.
-    g = {g{:}, vertcat(alg_eq ./sqrt((z_U - z_L)/2), ode_eq ./ sqrt((x_U - x_L))/2)};
+    g = {g{:}, vertcat(alg_eq, ode_eq ./ ((x_U - x_L)))};
     lbg = [lbg; zeros(Nx+Nz,1)];
     ubg = [ubg; zeros(Nx+Nz,1)];
     equality = [equality; true(Nx+Nz, 1)];
 
     % Calculate and scale angular velocity derivatives and lift force
-    omega_dot = si_to_scaled(rhs(6:8), -0.5*ones(3,1), 0.5*ones(3,1)); % Scaled angular accelerations
+    v_dot = si_to_scaled(rhs(3:5), -kite_acc_max * params_num.env.g, kite_acc_max * params_num.env.g); 
+    omega_dot = si_to_scaled(rhs(6:8), -0.5 * ones(3,1), 0.5 * ones(3,1)); % Scaled angular accelerations
+    
     lift_force = -F_aero_B(1)*sin(alpha) - F_aero_B(3)*cos(alpha); % Lift force calculation
 
 end

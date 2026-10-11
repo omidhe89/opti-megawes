@@ -22,7 +22,7 @@
 %   (Copyright 2021 Delft University of Technology), which is also licensed under
 %   the Apache License, Version 2.0.
 
-function [F_a_B, M_a_B, AeroAngels] = aero_MegAWES(Omega_OB_B, v_a_W, alpha, beta, rho_factor, deflection_act, params_sym)
+function [F_a_B, M_a_B, AeroAngels] = aero_MegAWES(Omega_OB_B, v_a, alpha, beta, rho_factor, deflection_act, params_sym)
     % AERO_MEGAWES Calculates aerodynamic forces and moments for a multi-element kite.
     %
     % This function computes the total aerodynamic forces and moments acting on
@@ -32,7 +32,7 @@ function [F_a_B, M_a_B, AeroAngels] = aero_MegAWES(Omega_OB_B, v_a_W, alpha, bet
     % Inputs:
     %   Omega_OB_B      - Vector (3x1), Angular velocity of the body frame 'B'
     %                     relative to the orientation frame 'O', expressed in body coordinates (rad/s).
-    %   v_a_W           - Vector (3x1), Apparent wind velocity vector in the World frame (m/s).
+    %   v_a             - Scalar, Magnitude of the apparent wind velocity (m/s).
     %   alpha           - Scalar, Angle of attack (rad).
     %   beta            - Scalar, Sideslip angle (rad).
     %   rho_factor      - Scalar, Factor for air density variation (e.g., due to altitude).
@@ -65,8 +65,7 @@ function [F_a_B, M_a_B, AeroAngels] = aero_MegAWES(Omega_OB_B, v_a_W, alpha, bet
     c_vs = params_sym.kite.c_vs; % Vertical stabilizer (rudder) chord
     x_vs = params_sym.kite.x_vs; % Longitudinal position of vertical stabilizer
     
-    % Calculate the magnitude of the apparent wind velocity.
-    v_a = norm(v_a_W);
+  
     
     % Extract individual control deflections
     delta_a = deflection_act(1); % Aileron deflection
@@ -78,8 +77,9 @@ function [F_a_B, M_a_B, AeroAngels] = aero_MegAWES(Omega_OB_B, v_a_W, alpha, bet
     
     % --- Elevator Aerodynamics ---
     % Calculate damping contribution to effective angle of attack for elevator.
-    % This accounts for the pitch rate (Omega_OB_B(1)) effect at the elevator's longitudinal position.
-    Alpha_damp = atan2(((x_el + c_el * 0.25) * Omega_OB_B(1)), (v_a * cos(alpha) * cos(beta)));
+    % This accounts for the pitch rate (Omega_OB_B(2)) effect at the elevator's longitudinal position.
+    % (The original MegAWES Aerodynamics.m used the roll rate Omega_OB_B(1) here.)
+    Alpha_damp = atan2(((x_el + c_el * 0.25) * Omega_OB_B(2)), (v_a * cos(alpha) * cos(beta)));
     % Calculate the corrected angle of attack for the elevator in degrees.
     Alpha_corrected = (180 / pi) * (alpha + Alpha_damp + delta_e);
     
@@ -103,8 +103,6 @@ function [F_a_B, M_a_B, AeroAngels] = aero_MegAWES(Omega_OB_B, v_a_W, alpha, bet
     % This accounts for the yaw rate (Omega_OB_B(3)) effect at the rudder's longitudinal position.
     Beta_damp = -1 * atan2(((x_vs + c_vs * 0.25) * Omega_OB_B(3)), (v_a * cos(alpha) * cos(beta)));
     % Calculate the corrected sideslip angle for the rudder in degrees.
-    % Note: Using x_el and c_el for rudder damping calculation might be a typo,
-    % typically x_vs and c_vs (vertical stabilizer properties) would be used here.
     Beta_corrected = (180 / pi) * (beta + Beta_damp + delta_r);
     
     % Polynomial terms for rudder aerodynamic coefficients (CL and CD)

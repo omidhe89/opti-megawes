@@ -65,6 +65,9 @@ Thumbs.db
 
 # matlab data files
 *.mat
+# ...except the model data the code loads (system_vars_params.m, Visualisation.m, awe_plots.m)
+!lib/DE2019_params.mat
+!lib/plane_image.mat
 *.fig
 *.pdf
 
