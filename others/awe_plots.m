@@ -33,9 +33,10 @@ function awe_plots(t, optimal_results, sol_stat, h, params_num, ocp_bounds)
 %
 % Inputs:
 %   t               - Time vector.
-%   optimal_results - Structure containing optimal state (xn), control (un),
+%   optimal_results - Structure containing optimal state (xn: x9:x11 = q1..q3,
+%                     x12:x14 = W-frame position, x15 = q0), control (un),
 %                     algebraic (zn), and other relevant results like alpha, beta,
-%                     vel_W, pos_O.
+%                     vel_W, pos_O and eta_OB (Euler angles derived from the quaternion).
 %   sol_stat        - Solver statistics, specifically CPU times.
 %   h               - Time step.
 %   params_num      - Structure containing numerical parameters of the system,
@@ -93,6 +94,7 @@ function awe_plots(t, optimal_results, sol_stat, h, params_num, ocp_bounds)
     T_kite_B = [optimal_results(:).T_kite_B]; % Kite tether force in body frame (not used in plots directly)
     vel_W = [optimal_results(:).vel_W];       % Kite velocity in wind frame
     pos_O = [optimal_results(:).pos_O];       % Kite position in origin frame
+    eta_OB = [optimal_results(:).eta_OB];     % Euler angles [roll; pitch; yaw] from the quaternion
 
     % Write problem formulation and constraints to the LaTeX file
     latex_description(latexFile, params_num, ocp_bounds)
@@ -141,27 +143,28 @@ function awe_plots(t, optimal_results, sol_stat, h, params_num, ocp_bounds)
     hold on
     grid on
 
-    % Subplot 5: Euler angles
+    % Subplot 5: Attitude quaternion (x15 = q0, x9:x11 = q1..q3) and its norm
     subplot(7,1,5)
-    plot(t.', (180/pi) .* xn(9:11,:).','-');
-    legend('$\phi$', '$\theta$', '$\psi$', 'Interpreter','latex', 'Location','east')
-    ylabel('$q_a (\circ)$', 'Interpreter','latex')
-    title('euler angles', 'FontSize', 10)
+    plot(t.', xn([15, 9, 10, 11],:).','-');
     hold on
+    plot(t.', sqrt(sum(xn([9, 10, 11, 15],:).^2, 1)).', '--k');
+    legend('$q_0$', '$q_1$', '$q_2$', '$q_3$', '$\|q\|$', 'Interpreter','latex', 'Location','east')
+    ylabel('$q (-)$', 'Interpreter','latex')
+    title('attitude quaternion', 'FontSize', 10)
     grid on
 
-    % Subplot 6: Spherical reference angles for parameterizing kite position
+    % Subplot 6: Kite position in the wind frame (Cartesian states x12:x14)
     subplot(7,1,6)
-    plot(t.', (180/pi) .* xn(12:13,:).','-');
-    legend('$\lambda(azimuth)$', '$\eta(elevation)$', 'Interpreter','latex', 'Location','east')
-    ylabel('$q_s (\circ)$', 'Interpreter','latex')
-    title('spherical coordinate angles of the kite', 'FontSize', 10)
+    plot(t.', xn(12:14,:).','-');
+    legend('$x_W$', '$y_W$', '$z_W$', 'Interpreter','latex', 'Location','east')
+    ylabel('$p^{\textrm{W}} (m)$', 'Interpreter','latex')
+    title('kite position in wind reference frame', 'FontSize', 10)
     hold on
     grid on
 
-    % Subplot 7: Kite distance
+    % Subplot 7: Kite distance from the winch
     subplot(7,1,7)
-    plot(t.', xn(14,:).','-');
+    plot(t.', sqrt(sum(xn(12:14,:).^2, 1)).','-');
     ylabel('$r (m)$', 'Interpreter','latex')
     title('kite distants', 'FontSize', 10)
     hold on
@@ -169,6 +172,18 @@ function awe_plots(t, optimal_results, sol_stat, h, params_num, ocp_bounds)
 
     % Include the states plot in the LaTeX document
     prepare_for_latex(latexFile, fig_states, 'initial and optimal states')
+
+    % Plot the attitude as Euler angles, derived from the quaternion states
+    figure(9);
+    fig_euler = gcf;
+    set(fig_euler, 'Name', 'fig_euler', 'units','normalized','Position', [0.1 0.1 0.8 0.8]);
+    plot(t.', (180/pi) .* eta_OB.','-');
+    legend('$\phi$', '$\theta$', '$\psi$', 'Interpreter','latex', 'Location','east')
+    ylabel('$\eta (\circ)$', 'Interpreter','latex')
+    xlabel('time (s)')
+    title('euler angles (from the attitude quaternion)', 'FontSize', 10)
+    grid on
+    prepare_for_latex(latexFile, fig_euler, 'optimal attitude in euler angles')
 
     % Plot optimal algebraic states
     figure(2);
@@ -414,7 +429,7 @@ end
 %
 % Inputs:
 %   pos_O       - Kite position in the origin frame [x; y; z].
-%   xn          - Optimal state vector, including Euler angles for kite orientation.
+%   xn          - Optimal state vector, including the attitude quaternion (x9:x11, x15).
 %   params_num  - Structure containing numerical parameters, including wind direction.
 %   fig_num     - Figure number to use for plotting.
 %
@@ -481,9 +496,6 @@ function fig_traj = plot_trajectory(pos_O, xn, params_num, fig_num)
             pn = pos_O(1,k);    % Position North (x)
             pe = pos_O(2,k);    % Position East (y)
             pd = pos_O(3,k);    % Position Down (z) - needs negation for Up
-            phi = xn(9,k);      % Roll angle
-            theta = xn(10,k);   % Pitch angle
-            psi = xn(11,k);     % Yaw angle
             scale = 1;          % Scale for the kite model
 
             % Load kite 3D model data (faces, vertices, colors)
@@ -495,10 +507,8 @@ function fig_traj = plot_trajectory(pos_O, xn, params_num, fig_num)
             % Apply scale to vertices
             Vert = scale*Verti';
 
-            % Create rotation matrix from Euler angles (Z-Y-X sequence for Yaw-Pitch-Roll)
-            R_body_to_inertial = [ cos(psi)*cos(theta) , cos(psi)*sin(phi)*sin(theta) - cos(phi)*sin(psi) , sin(phi)*sin(psi) + cos(phi)*cos(psi)*sin(theta);
-                                   cos(theta)*sin(psi) , cos(phi)*cos(psi) + sin(phi)*sin(psi)*sin(theta) , cos(phi)*sin(psi)*sin(theta) - cos(psi)*sin(phi);
-                                   -sin(theta)         ,           cos(theta)*sin(phi)                   ,           cos(phi)*cos(theta)                  ];
+            % Rotation matrix body -> inertial, from the attitude quaternion states
+            R_body_to_inertial = quat_to_dcm(xn(15,k), xn(9:11,k));
 
             % Rotate and translate vertices to the current kite position
             V = R_body_to_inertial * Vert;

@@ -1,4 +1,4 @@
-function [pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O] = estimations_ap4(x, params_sym)
+function [pos_O, v_k_W, M_OB] = estimations_ap4(x, params_sym)
 % ESTIMATIONS_AP4 Calculates kinematic estimations for the kite in different frames.
 %
 % Copyright (c) 2025 Omid Heydarnia
@@ -24,7 +24,7 @@ function [pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O] = estimations_ap4(x, params
 % Description:
 %   This function computes various kinematic estimations for the kite, including
 %   its position and velocity in different reference frames (Ground/Inertial 'O',
-%   Wind 'W', Body 'B', and tangentional 'tau'). It also calculates the rotation
+%   Wind 'W', Body 'B'). It also calculates the rotation
 %   matrix from the body frame to the inertial frame.
 %
 %   This code is an interpretation and adaptation of concepts and calculations
@@ -37,19 +37,18 @@ function [pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O] = estimations_ap4(x, params
 %                x(1:2)   - Winch states (tether angle, angular velocity)
 %                x(3:5)   - Kite body-frame linear velocities [vx; vy; vz]
 %                x(6:8)   - Kite body-frame angular velocities [p; q; r]
-%                x(9:11)  - Euler angles [phi; theta; psi] (roll, pitch, yaw)
-%                x(12)    - Kite longitude (rad)
-%                x(13)    - Kite latitude (rad)
-%                x(14)    - Kite height in spherical coordinates (h_tau) (m)
+%                x(9:11)  - Quaternion vector part [q1; q2; q3]
+%                x(12:14) - Kite position in the wind frame W (Cartesian, m)
+%                x(15)    - Quaternion scalar part q0
 %   params_sym - struct, CasADi symbolic parameters
 %
 % Outputs:
 %   pos_O      - CasADi SX variable (3x1), Kite position in the ground-fixed (inertial) frame 'O'.
-%   pos_W      - CasADi SX variable (3x1), Kite position in the wind-fixed frame 'W'.
 %   v_k_W      - CasADi SX variable (3x1), Kite kinematic velocity in the wind-fixed frame 'W'.
 %   M_OB       - CasADi SX variable (3x3), Rotation matrix from Body frame 'B' to Inertial frame 'O'.
-%   v_k_tau    - CasADi SX variable (3x1), Kite kinematic velocity in the tether frame 'tau'.
-%   v_k_O      - CasADi SX variable (3x1), Kite kinematic velocity in the wind-fixed frame 'O'.
+%
+%   NOTE: the W-frame Cartesian position is NOT an output -- it is the state
+%   x(12:14) itself; index the state vector directly where it is needed.
 %
 % See also: build_dynamics, system_vars_params, transformFromWtoO
 
@@ -59,26 +58,16 @@ wind_direction = params_sym.env.wind.direction;
 % Extract individual state components from the input state vector 'x'.
 % These correspond to the AP4 (Aircraft Part 4) model states.
 v_k_B       = x(3:5);  % Kite kinetic velocity in body frame (vx, vy, vz)
-omega_OB_B  = x(6:8);  % Kite angular velocity in body frame (p, q, r)
-EULER       = x(9:11); % Euler angles (roll, pitch, yaw) [phi; theta; psi]
-long        = x(12);   % Longitude (azimuth) of the kite in spherical coordinates
-lat         = x(13);   % Latitude (elevation) of the kite in spherical coordinates
-h_tau       = x(14);   % Height (radius) of the kite in spherical coordinates
+qv          = x(9:11); % Quaternion vector part [q1; q2; q3]
+pos_W       = x(12:14);% Kite position in the wind frame W (Cartesian, m)
+q0          = x(15);   % Quaternion scalar part
 
 % --- Compute Rotation Matrix from Body Frame to Inertial Frame (M_OB) ---
 % This matrix transforms vectors from the kite's body-fixed coordinate
 % system to the ground-fixed inertial coordinate system (NED - North-East-Down).
-% The rotation sequence is typically Z-Y-X (yaw-pitch-roll).
-c_psi   = cos(EULER(3)); % Cosine of yaw angle (psi)
-s_psi   = sin(EULER(3)); % Sine of yaw angle (psi)
-c_theta = cos(EULER(2)); % Cosine of pitch angle (theta)
-s_theta = sin(EULER(2)); % Sine of pitch angle (theta)
-c_phi   = cos(EULER(1)); % Cosine of roll angle (phi)
-s_phi   = sin(EULER(1)); % Sine of roll angle (phi)
-
-M_OB = [ c_psi*c_theta, c_psi*s_theta*s_phi - s_psi*c_phi, c_psi*s_theta*c_phi + s_psi*s_phi;
-         s_psi*c_theta, s_psi*s_theta*s_phi + c_psi*c_phi, s_psi*s_theta*c_phi - c_psi*s_phi;
-        -s_theta,       c_theta*s_phi,                      c_theta*c_phi                     ];
+% Built from the attitude quaternion [q0; qv]; matches the same body-to-inertial
+% sense as the Z-Y-X (yaw-pitch-roll) Euler DCM this replaced.
+M_OB = quat_to_dcm(q0, qv);
 
 % --- Compute Rotation Matrix from Wind Frame to Ground-Fixed Frame (M_WO) ---
 % This matrix rotates vectors from a wind-aligned frame (often assumed to be
@@ -87,13 +76,6 @@ M_OB = [ c_psi*c_theta, c_psi*s_theta*s_phi - s_psi*c_phi, c_psi*s_theta*c_phi +
 M_WO = [cos(wind_direction), sin(wind_direction), 0;
         sin(wind_direction), -cos(wind_direction), 0; 
         0,                   0,                   -1]; % Note: -1 for Z-axis inversion from wind frame to inertial (NED)
-
-% --- Calculate Kite Position in Wind Frame (pos_W) ---
-% Converts spherical coordinates (longitude, latitude, height) into
-% Cartesian coordinates within a wind-aligned frame.
-pos_W = [cos(long)*cos(lat);
-         sin(long)*cos(lat);
-         sin(lat)] * h_tau;
 
 % --- Calculate Kite Position in Ground-Fixed (Inertial) Frame (pos_O) ---
 % Transforms the position from the wind frame to the ground-fixed frame.
@@ -106,22 +88,5 @@ v_k_O = M_OB * v_k_B;
 % --- Calculate Kite Velocity in Wind Frame (v_k_W) ---
 % Transforms the kite's velocity from the ground-fixed frame to the wind frame.
 v_k_W = M_WO * v_k_O;
-
-% --- Compute Rotation Matrix from Wind Frame to Tether Frame (M_tauW) ---
-% This matrix transforms vectors from the wind-fixed frame to the
-% tangentional frame (tau). The tether frame typically has its X-axis along
-% the tether, and its orientation depends on the kite's spherical coordinates.
-sin_lat  = sin(lat);
-sin_long = sin(long);
-cos_lat  = cos(lat);
-cos_long = cos(long);
-
-M_tauW = [-sin_lat*cos_long, -sin_lat*sin_long, cos_lat;
-          -sin_long,         cos_long,          0;
-          -cos_lat*cos_long, -cos_lat*sin_long, -sin_lat];
-
-% --- Calculate Kite Velocity in Tether Frame (v_k_tau) ---
-% Transforms the kite's velocity from the wind frame to the tether frame.
-v_k_tau = M_tauW * v_k_W;
 
 end % End of function estimations_ap4

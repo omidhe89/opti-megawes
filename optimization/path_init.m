@@ -114,8 +114,6 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     % Transform the angular velocity to the Orientation frame
     kiteOmega_OB_O = M_OW * omega_OB_W;
     
-    yawResetCounter = 0; % Counter to handle yaw angle wrap-around for continuity
-
     % The reeled-out (unstretched) tether length is the kite distance shortened by the
     % elastic strain at the guessed winch tension, so the tether solve below starts
     % from a taut tether that is consistent with the winch states.
@@ -124,11 +122,9 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
 
     % Pre-allocate arrays for efficiency
     kiteDist_tau = zeros(1, length(t));
-    kiteLat = zeros(1, length(t));
-    kiteLong = zeros(1, length(t));
     posKiteInit_O = zeros(3, length(t));
     velKiteInit_O = zeros(3, length(t));
-    kiteEuler = zeros(3, length(t));
+    kiteQuat = zeros(4, length(t)); % [q0;q1;q2;q3] attitude quaternion, extracted directly from rotMat_OB below
     kiteOmega_OB_B = zeros(3, length(t));
     velKiteInit_B = zeros(3, length(t));
     winchRotAngle = zeros(1, length(t));
@@ -137,38 +133,40 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     tether_elevation = zeros(1, length(t));
 
     for i = 1:length(t)
-        % Calculate kite distance, latitude, and longitude
+        % Radial distance from the winch (used for the winch-state guesses;
+        % the position states themselves are Cartesian W-frame)
         kiteDist_tau(i) = norm(posKiteInit_W(:, i));
-        kiteLat(i) = asin(posKiteInit_W(3, i) / kiteDist_tau(i));
-        kiteLong(i) = atan2(posKiteInit_W(2, i), posKiteInit_W(1, i));
-        
+
         % Transform kite position and velocity to Orientation frame
         posKiteInit_O(:, i) = M_OW * posKiteInit_W(:, i);
         velKiteInit_O(:, i) = M_OW * velKiteInit_W(:, i);
 
         % Calculate body-frame (B) basis vectors in Orientation frame (O)
         % ex: unit vector along velocity direction
-        % ez: unit vector along negative position vector (pointing towards origin)
+        % ez: unit vector towards the origin (tether side), made orthogonal to ex:
+        %     off the circle the position is not perpendicular to the velocity
+        %     (lemniscate), and a non-orthonormal triad is not a rotation
         % ey: cross product of ez and ex (completing the orthonormal triad)
         ex = velKiteInit_O(:, i) / norm(velKiteInit_O(:, i));
         ez = -posKiteInit_O(:, i) / norm(posKiteInit_O(:, i));
+        ez = ez - dot(ez, ex) * ex;
+        ez = ez / norm(ez);
         ey = cross(ez, ex);
         rotMat_OB = [ex ey ez]; % Rotation matrix from Body to Orientation frame
 
-        % Convert rotation matrix to Euler angles (1-2-3 sequence: roll, pitch, yaw)
-        if params_num.sim.path_type == 8 % For lemniscate, direct Euler angles conversion
-            [kiteEuler(1, i), kiteEuler(2, i), kiteEuler(3, i)] = dcm_to_euler_123(rotMat_OB);
-        else % For circular path, handle yaw continuity
-            [kiteEuler(1, i), kiteEuler(2, i), kiteEuler_tmp(1, i)] = dcm_to_euler_123(rotMat_OB);
-            if i > 1
-                % Check for yaw angle wrap-around (crossing +/- pi)
-                if abs(kiteEuler_tmp(1, i - 1) - kiteEuler_tmp(1, i)) >= (pi + 0 * (pi / 180))
-                    yawResetCounter = yawResetCounter + 1; % Increment counter if wrap-around occurs
-                end
-            end
-            % Apply correction for continuous yaw angle (for counter-clockwise flight)
-            kiteEuler(3, i) = kiteEuler_tmp(1, i) - (2 * yawResetCounter) * pi;
+        % Convert the rotation matrix DIRECTLY to a quaternion -- no Euler-angle
+        % intermediate, so no pitch singularity and no yaw-unwrap counter.
+        % dcm_to_quat returns either of +/-q (both encode the same rotation);
+        % enforcing sign continuity with the previous node makes the sequence
+        % vary smoothly through the SU(2) double cover, so after each full
+        % heading sweep it lands on -q and q(end) = (-1)^winding_number * q(1)
+        % for circular paths (q(end) = q(1) for the lemniscate) -- exactly what
+        % the periodicity constraint in building_NLP.m expects from the guess.
+        q_i = dcm_to_quat(rotMat_OB);
+        if i > 1 && dot(q_i, kiteQuat(:, i - 1)) < 0
+            q_i = -q_i; % pick the sign-continuous branch
         end
+        kiteQuat(:, i) = q_i;
 
         % Transform angular velocity and linear velocity to Body frame
         kiteOmega_OB_B(:, i) = rotMat_OB' * kiteOmega_OB_O;
@@ -177,22 +175,10 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
         % Calculate winch rotation angle and velocity
         winchRotAngle(1, i) = kiteDist_tau(i) / (1 + tetherStrainGuess) / params_num.winch.radius;
         
-        % Spherical coordinates transformation matrix for velocity
-        sin_lat = sin(kiteLat(i));
-        sin_long = sin(kiteLong(i));
-        cos_lat = cos(kiteLat(i));
-        cos_long = cos(kiteLong(i));
-        
-        % Rotation matrix from World frame to 'tether-aligned' frame (tau)
-        % This frame might have its z-axis aligned with the tether.
-        rotMat_tauW = [-sin_lat * cos_long, -sin_lat * sin_long, cos_lat;
-                       -sin_long, cos_long, 0;
-                       -cos_lat * cos_long, -cos_lat * sin_long, -sin_lat];
-        
-        % Transform kite velocity to tether-aligned frame
-        velKiteInit_tau = rotMat_tauW * velKiteInit_W(:, i);
-        % Winch rotation velocity derived from the z-component of velocity in tether-aligned frame
-        winchRotVel(1, i) = -velKiteInit_tau(3) / (1 + tetherStrainGuess) / params_num.winch.radius;
+        % Winch rotation velocity from the radial speed d|p|/dt = (p.v)/|p|
+        % (identical to the former -v_tau(3) through the tau-frame rotation)
+        winchRotVel(1, i) = (posKiteInit_W(:, i).' * velKiteInit_W(:, i)) ...
+                            / kiteDist_tau(i) / (1 + tetherStrainGuess) / params_num.winch.radius;
 
         % Calculate tether azimuth and elevation angles (used for algebraic variable guess)
         tetherAzimuth(1, i) = asin(posKiteInit_W(2, i) / norm(posKiteInit_W(:, i)));
@@ -200,9 +186,29 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     end
 
     % Assemble the initial guess for the state vector (xi)
-    % The order of states should match the definition in the problem.
-    xi = [winchRotAngle; winchRotVel; velKiteInit_B; kiteOmega_OB_B; kiteEuler; kiteLong; kiteLat; kiteDist_tau];
-    
+    % The order of states should match the definition in the problem:
+    % x(9:11) = quaternion vector part [q1;q2;q3], x(12:14) = Cartesian
+    % wind-frame position pos_W (already the frame the path was built in),
+    % x(15) = quaternion scalar q0.
+    xi = [winchRotAngle; winchRotVel; velKiteInit_B; kiteOmega_OB_B; kiteQuat(2:4, :); posKiteInit_W; kiteQuat(1, :)];
+
+    % Sanity check: quaternion unit norm at every initial-guess node
+    % (x9:11 = [q1;q2;q3], x15 = q0), plus the periodicity sign check
+    % (x(end) should equal (-1)^winding_number * x(1) on the quaternion block
+    % for circular paths, or exactly x(1) for the lemniscate).
+    q_norm = sqrt(xi(9,:).^2 + xi(10,:).^2 + xi(11,:).^2 + xi(15,:).^2);
+    fprintf('\nQuaternion norm at path_init nodes: min=%.6f, max=%.6f, max|norm-1|=%.3e\n', ...
+        min(q_norm), max(q_norm), max(abs(q_norm - 1)));
+    q_first = xi([9, 10, 11, 15], 1);
+    q_last  = xi([9, 10, 11, 15], end);
+    if params_num.sim.path_type == 8
+        s_expected = 1;
+    else
+        s_expected = (-1)^params_num.sim.winding_number;
+    end
+    fprintf('Expected q(end) = %d * q(1); max mismatch = %.3e\n\n', ...
+        s_expected, max(abs(q_last - s_expected*q_first)));
+
     zi = []; % Initialize algebraic variables vector
     ui = []; % Initialize control variables vector
 
@@ -359,25 +365,27 @@ function [xi, zi, ui] = path_init(symbolic_funcs, params_sym, params_num, circRa
     grid on
     
     subplot(7, 1, 5)
-    plot(t.', xi(9:11, :).');
-    title('Kite Euler Angles');
-    ylabel('Angle (rad)');
-    legend('Roll', 'Pitch', 'Yaw', 'Location', 'best');
+    plot(t.', xi([9, 10, 11, 15], :).');
+    hold on
+    plot(t.', q_norm.', '--k', 'LineWidth', 1.5);
+    title('Kite Attitude Quaternion');
+    ylabel('Component (-)');
+    legend('q1', 'q2', 'q3', 'q0', '||q||', 'Location', 'best');
     grid on
     
     subplot(7, 1, 6)
-    plot(t.', xi(12:13, :).');
-    title('Kite Longitude and Latitude');
-    ylabel('Angle (rad)');
-    legend('Longitude', 'Latitude', 'Location', 'best');
+    plot(t.', xi(12:14, :).');
+    title('Kite Position in Wind Frame');
+    ylabel('Position (m)');
+    legend('x_W', 'y_W', 'z_W', 'Location', 'best');
     grid on
     
     subplot(7, 1, 7)
-    plot(t.', xi(14, :).');
+    plot(t.', kiteDist_tau.');
     title('Kite Distance from Winch');
     xlabel('Time (s)');
     ylabel('Distance (m)');
-    ylim([min(xi(14, :).') - 1, max(xi(14, :).') + 1])
+    ylim([min(kiteDist_tau) - 1, max(kiteDist_tau) + 1])
     grid on
 
     % Figure 2: Algebraic Variables (zi) over time
@@ -459,39 +467,15 @@ function ode_eq = find_u(kite_dynamics, winch_dynamics, xi_next, xi, ui, zi, par
     F_p_B = 0;                     % Placeholder for propulsion force in body frame (assumed zero here)
 
     % Evaluate the right-hand side (RHS) of the Ordinary Differential Equations (ODEs)
-    % This combines the winch dynamics and kite dynamics.
-    rhs = full(vertcat(winch_dynamics(xi_next, u_winch, tether_force_at_winch, params_num_array), ...
-                       kite_dynamics(xi_next, zi, F_a_B, M_a_B, F_p_B, params_num_array)));
-    
-    % Calculate the residual: xi_next - xi - h * rhs
-    % This is the implicit Euler discretization
-    % of the ODE: dx/dt = rhs => x_next - x = h * rhs
+    % at the interval midpoint state -- implicit MIDPOINT discretization,
+    % matching the transcription defects in model_for_optimization.m so the
+    % initial-guess controls are consistent with the NLP's own integrator.
+    x_mid = 0.5 .* (xi_next + xi);
+    rhs = full(vertcat(winch_dynamics(x_mid, u_winch, tether_force_at_winch, params_num_array), ...
+                       kite_dynamics(x_mid, zi, F_a_B, M_a_B, F_p_B, params_num_array)));
+
+    % Calculate the residual: xi_next - xi - h * rhs(x_mid)
     ode_eq = xi_next - xi - h .* rhs;
-end
-
-%---
-
-function [phi, theta, psi] = dcm_to_euler_123(R)
-    % DCM_TO_EULER_123 Converts a Direction Cosine Matrix (DCM) to Euler angles (Z-Y-X sequence).
-    %
-    % This function converts a 3x3 rotation matrix (Direction Cosine Matrix)
-    % into Euler angles following the Z-Y-X (yaw-pitch-roll) convention, also
-    % known as 1-2-3 sequence (rotation about X, then Y, then Z).
-    %
-    % Inputs:
-    %   R       - 3x3 matrix, Direction Cosine Matrix (rotation matrix).
-    %
-    % Outputs:
-    %   phi     - Scalar, Roll angle (rotation about X-axis), in radians.
-    %   theta   - Scalar, Pitch angle (rotation about Y-axis), in radians.
-    %   psi     - Scalar, Yaw angle (rotation about Z-axis), in radians.
-    %
-    % Reference: Based on standard aerospace conventions for Euler angle extraction.
-    % Caution: This conversion has singularities at pitch = +/- 90 degrees.
-
-    phi = atan2(R(3, 2), R(3, 3));   % Roll (rotation about X)
-    theta = -asin(R(3, 1));          % Pitch (rotation about Y)
-    psi = atan2(R(2, 1), R(1, 1));   % Yaw (rotation about Z)
 end
 
 %---

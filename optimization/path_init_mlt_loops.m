@@ -82,11 +82,10 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
     % unstretched tether length = kite distance shortened by the elastic strain at the guessed tension
     tetherForceGuessAtWinch = 1.5e6; % a rough estimation about tether force value!
     tetherStrainGuess = tetherForceGuessAtWinch / (params_num.tether.E * params_num.tether.A);
+    kiteQuat = zeros(4, length(t)); % [q0;q1;q2;q3] attitude quaternion, derived FROM kiteEuler below
     for i=1:length(t)
          
         kiteDist_tau(i) = norm(posKiteInit_W(:,i),2);
-        kiteLat(i) = asin(posKiteInit_W(3,i) / kiteDist_tau(1,i));
-        kiteLong(i) = atan2(posKiteInit_W(2,i),posKiteInit_W(1,i));    
         
         posKiteInit_O(:,i) = M_OW * posKiteInit_W(:,i);
         velKiteInit_O(:,i) = M_OW * velKiteInit_W(:,i);
@@ -94,6 +93,8 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
 
         ex = velKiteInit_O(:,i)/norm(velKiteInit_O(:,i));
         ez = -posKiteInit_O(:,i)/ norm(posKiteInit_O(:,i));
+        ez = ez - dot(ez,ex)*ex; % orthogonal to ex, so rotMat_OB is a rotation (see path_init.m)
+        ez = ez/norm(ez);
         ey = cross(ez,ex);
         rotMat_OB = [ex ey ez];
 
@@ -119,21 +120,19 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
 
         end
 
+        % Convert the (possibly multi-turn, unwrapped) Euler angles to a
+        % quaternion. Because psi here is continuous rather than wrapped to
+        % [-pi,pi], the resulting quaternion varies smoothly through the SU(2)
+        % double cover across laps -- no separate sign-continuity check needed.
+        kiteQuat(:,i) = euler_to_quat(kiteEuler(1,i), kiteEuler(2,i), kiteEuler(3,i));
+
         kiteOmega_OB_B(:,i) = rotMat_OB' * kiteOmega_OB_O;
         velKiteInit_B(:,i) = rotMat_OB' * velKiteInit_O(:,i);
         
         winchRotAngle(1,i) = kiteDist_tau(i)/(1 + tetherStrainGuess)/params_num.winch.radius;
-        sin_lat  = sin(kiteLat(i));
-        sin_long = sin(kiteLong(i));
-        cos_lat  = cos(kiteLat(i));
-        cos_long = cos(kiteLong(i));
- 
-        rotMat_tauW = [-sin_lat*cos_long, -sin_lat*sin_long,cos_lat;
-                -sin_long, cos_long, 0;
-                -cos_lat*cos_long, -cos_lat*sin_long, -sin_lat];
-
-        velKiteInit_tau = rotMat_tauW * velKiteInit_W(:,i);
-        winchRotVel(1,i) = -velKiteInit_tau(3) / (1 + tetherStrainGuess) / params_num.winch.radius;
+        % Winch rotation velocity from the radial speed d|p|/dt = (p.v)/|p|
+        winchRotVel(1,i) = (posKiteInit_W(:,i).' * velKiteInit_W(:,i)) ...
+                           / kiteDist_tau(i) / (1 + tetherStrainGuess) / params_num.winch.radius;
 
 
         % azithmuth and elevation angles to start finding algebric variables
@@ -142,7 +141,8 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
 
     end
 
-    xi = [winchRotAngle; winchRotVel; velKiteInit_B; kiteOmega_OB_B; kiteEuler; kiteLong; kiteLat; kiteDist_tau];     % - 25 * ones(1, N+1)
+    % x(12:14) = Cartesian wind-frame position pos_W (the frame the path was built in)
+    xi = [winchRotAngle; winchRotVel; velKiteInit_B; kiteOmega_OB_B; kiteQuat(2:4,:); posKiteInit_W; kiteQuat(1,:)];     % - 25 * ones(1, N+1)
 
     figure(100)
     plot3(posKiteInit_W(1,1),posKiteInit_W(2,1),posKiteInit_W(3,1),'*r')
@@ -239,15 +239,15 @@ function [xi, zi, ui] = path_init_mlt_loops(symbolic_funcs, params_sym, params_n
     hold on
     grid on
     subplot(7,1,5)
-    plot(t.', (180/pi) .* xi(9:11,:).');
+    plot(t.', xi([9,10,11,15],:).');
     hold on
     grid on
     subplot(7,1,6)
-    plot(t.', xi(12:13,:).');
+    plot(t.', xi(12:14,:).');
     hold on
     grid on
     subplot(7,1,7)
-    plot(t.', xi(14,:).');
+    plot(t.', kiteDist_tau.');
     hold on
     grid on
 
@@ -344,7 +344,9 @@ function ode_eq = find_u(kite_dynamics, winch_dynamics, xi_next, xi, ui, zi, par
     M_a_B = ui(5:7);
 
     F_p_B = 0;
-    rhs = full(vertcat(winch_dynamics(xi_next, u_winch, tether_force_at_winch, params_num_array), kite_dynamics(xi_next, zi, F_a_B, M_a_B, F_p_B, params_num_array)));
+    % Implicit midpoint (matches model_for_optimization.m's transcription)
+    x_mid = 0.5 .* (xi_next + xi);
+    rhs = full(vertcat(winch_dynamics(x_mid, u_winch, tether_force_at_winch, params_num_array), kite_dynamics(x_mid, zi, F_a_B, M_a_B, F_p_B, params_num_array)));
     ode_eq = xi_next - xi - h.*rhs;
 end
 function [phi, theta, psi] = dcm_to_euler_123(R)

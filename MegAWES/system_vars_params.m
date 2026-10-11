@@ -56,9 +56,23 @@ load DE2019_params.mat DE2019 % Load numerical parameters for the kite (aircraft
 %% --- Define System Dimensions (Number of States, Controls, Algebraic Variables) ---
 
 % Nx: Number of differential states.
-% x(1:2) typically represents winch-related states (e.g., roration angle, rotation speed).
-% x(3:14) typically represent aircraft states (e.g., velocity, angular rates, orientation, position(in spherical refernece frame)).
-params_num.Nx = 14;  
+% x(1:2)   winch-related states (rotation angle, rotation speed).
+% x(3:5)   kite body-frame linear velocity.
+% x(6:8)   kite body-frame angular velocity (p,q,r).
+% x(9:11)  quaternion vector part [q1;q2;q3] (attitude, body-to-inertial).
+% x(12:14) kite position in the wind frame W (Cartesian [x;y;z], meters).
+%          Like the attitude quaternion, this is a singularity-free chart:
+%          the former spherical states [long; lat; h_tau] carried a
+%          1/(h_tau*cos(lat)) kinematic singularity (position analogue of
+%          gimbal lock) and made the ODE defect rows rational-trigonometric.
+% x(15)    quaternion scalar part q0 (attitude).
+% Attitude is represented as a unit quaternion [q0;q1;q2;q3] kept fully
+% differential (no gimbal-lock singularity); the unit-norm constraint is
+% enforced explicitly as an NLP equality constraint at node 0 (building_NLP.m)
+% rather than folded into the algebraic vector z, since q0 must be able to pass
+% through zero (e.g. every lap on a circular path) without breaking the DAE's
+% algebraic Jacobian invertibility.
+params_num.Nx = 15;
 
 % Nu: Number of control inputs. This varies significantly based on the control mode.
 if params_num.ctrl_mode == 1 % Aerodynamic Control Mode

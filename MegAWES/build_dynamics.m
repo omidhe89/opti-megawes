@@ -71,14 +71,14 @@ function [kite_data, tether_dynamics, tether_alg_equation, kite_dynamics, winch_
     % --- Kite Kinematics and Position Estimations ---
     % Calculate various kite-related position and velocity vectors.
     % 'pos_O': Kite position in ground-fixed frame.
-    % 'pos_W': Kite position relative to winch in wind frame.
     % 'v_k_W': Kite velocity relative to winch in wind frame.
     % 'M_OB': Rotation matrix from body frame to ground frame.
-    % 'v_k_tau': Kite velocity in tangentional refernce frame (for more info refer to Sebastian Rapp's theis).
-    [pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O] = estimations_ap4(x, params_sym);
+    % (The W-frame position needs no output: it IS the state x(12:14).)
+    [pos_O, v_k_W, M_OB] = estimations_ap4(x, params_sym);
+    pos_W = x(12:14); % Kite position relative to winch in wind frame (state)
     % Create a CasADi Function for these kite data outputs
-    kite_data = Function('kite_data', {x, params_array_values}, {pos_O, pos_W, v_k_W, M_OB, v_k_tau, v_k_O}, ...
-                         {'x', 'p'}, {'pos_O', 'pos_W', 'v_k_W', 'M_OB', 'v_k_tau', 'v_k_O'});
+    kite_data = Function('kite_data', {x, params_array_values}, {pos_O, v_k_W, M_OB}, ...
+                         {'x', 'p'}, {'pos_O', 'v_k_W', 'M_OB'});
 
     % --- Tether Dynamics ---
     % Calculate tether tension and other related quantities.

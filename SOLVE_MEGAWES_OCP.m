@@ -62,12 +62,12 @@ baseWindDir = pi;       % radians, wind direction. Pi (180 degrees) means
 % Simulation and Path Parameters
 % Note: The circle flies counter-clockwise
 params_num.sim.ablation_study = 0;      % 0: flexible tether, 1: rigid tether
-path_type = 8;          % Defines the desired flight path geometry.
+path_type = 0;          % Defines the desired flight path geometry.
                         % 0: circular path, 8: lemniscate (figure-eight) path.
 init_path_radius = 220; % m, initial radius for path generation (for both circle and lemniscate).
 params_num.sim.path_type = path_type;
 params_num.sim.init_flight_speed = 70; % m/s, initial guess for the aircraft's flight speed.
-params_num.sim.winding_number = 3; % cylces numbers ( Note: winding number for circles should be twice the size of lemniscates for comparison.) 
+params_num.sim.winding_number = 6; % cylces numbers ( Note: winding number for circles should be twice the size of lemniscates for comparison.) 
 
 % Calculate Estimated Final Time (Tf) for the flight trajectory.
 % Tf estimates an appropriate simulation duration based on path type and winding number.
@@ -120,8 +120,7 @@ ocp_bounds.u_L(8:10) = 0.7 * ocp_bounds.u_L(8:10); % 0.85
 ocp_bounds.u_U(8:10) = 0.7 * ocp_bounds.u_U(8:10); % 0.85
 ocp_bounds.x_L(6:8) = 0.85 * ocp_bounds.x_L(6:8); % 0.95
 ocp_bounds.x_U(6:8) = 0.85 * ocp_bounds.x_U(6:8); % 0.95
-ocp_bounds.x_L(9:10) = 0.825 * ocp_bounds.x_L(9:10); % 0.95   (9:10)
-ocp_bounds.x_U(9:10) = 0.825 * ocp_bounds.x_U(9:10); % 0.95   (9:10)  
+
 
 %% Build Symbolic System Dynamics and Cost Function
 % Define the symbolic equations governing the MegAWES system and the objective (cost) function to be minimized/maximized.
@@ -367,7 +366,8 @@ optimal_results = struct;
 for k = 1:N+1
         optimal_results(k).xn = xn(:,k);
         optimal_results(k).zn = zn(:,k);
-        [pos_O(:,k), pos_W(:,k), vel_W(:,k), M_OB, ~] = symbolic_funcs.kite_data(xn(:,k), paramsColumnVec);
+        [pos_O(:,k), vel_W(:,k), M_OB] = symbolic_funcs.kite_data(xn(:,k), paramsColumnVec);
+        pos_W(:,k) = xn(12:14,k); % W-frame position is the state itself
         optimal_results(k).pos_O = full(pos_O(:,k));
         optimal_results(k).pos_W = full(pos_W(:,k));
         optimal_results(k).vel_W = full(vel_W(:,k));
@@ -393,6 +393,18 @@ end
 ui = scaled_to_si(w_init.ui_scaled, ocp_bounds.u_L, ocp_bounds.u_U);
 xi = scaled_to_si(w_init.xi_scaled, ocp_bounds.x_L, ocp_bounds.x_U);
 zi = scaled_to_si(w_init.zi_scaled, ocp_bounds.z_L, ocp_bounds.z_U);
+
+% Attitude as Euler angles [roll; pitch; yaw], derived from the quaternion
+% states (x(9:11) = [q1;q2;q3], x(15) = q0) for the attitude plot and the
+% animation. Yaw is unwrapped so it stays continuous over the loops.
+eul = zeros(3, N+1);
+for k = 1:N+1
+    [eul(1,k), eul(2,k), eul(3,k)] = quat_to_euler(xn(15,k), xn(9:11,k));
+end
+eul(3,:) = unwrap(eul(3,:));
+for k = 1:N+1
+    optimal_results(k).eta_OB = eul(:,k);
+end
 
 % save optimal flight data in mat files
 save_flight_data(t, optimal_results, sol_stat, params_num)

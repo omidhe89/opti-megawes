@@ -148,10 +148,27 @@ Zk_si = scaled_to_si(Zk, z_L, z_U);
 
 alg_eq = symbolic_funcs.tether_alg_equation(Xk_si, Zk_si, paramsColumnVec);
 
-g = {g{:}, vertcat(alg_eq)}; %
+% alg_eq components are W-frame x,y,z position mismatches (meters), matching
+% the Cartesian position states x(12:14) axis-for-axis -- scale by their
+% ranges, identical to the per-node copy in model_for_optimization.m.
+alg_scale = x_U(12:14) - x_L(12:14); % per-axis flight-region extent (m)
+g = {g{:}, vertcat(alg_eq)./alg_scale};
 lbg = [lbg; zeros(Nz,1)];
 ubg = [ubg; zeros(Nz,1)];
 equality = [equality; true(Nz, 1)];
+
+% Unit-norm constraint on the initial attitude quaternion -- the ONLY norm
+% constraint in the whole NLP, and it must stay active. The quaternion rows
+% of the ODE defect (model_for_optimization.m) use a norm-preserving midpoint
+% (Cayley) discretization, so this single constraint pins ||q|| = 1 at every
+% node. Without it, q -> c*q is an exactly flat null direction of the entire
+% NLP (the defect is linear in q and quat_to_dcm normalizes internally),
+% which by itself produces a singular KKT system.
+g_quat_norm_0 = Xk_si(9)^2 + Xk_si(10)^2 + Xk_si(11)^2 + Xk_si(15)^2 - 1;
+g = {g{:}, g_quat_norm_0};
+lbg = [lbg; 0];
+ubg = [ubg; 0];
+equality = [equality; true(1, 1)];
 %
 % constrain the init position
 % g = {g{:}, vertcat(Xk(12) - xi_scaled(12,1))}; 
@@ -168,6 +185,16 @@ equality = [equality; true(Nz, 1)];
 % equality = [equality; [true(1,1)]];
 
 
+% Free reference power for the reel-out (traction) phase, scaled like Pk.
+% Deviations of the node power from it are penalized in the loop below,
+% which flattens the traction power; the optimizer chooses its level.
+P_ref = MX.sym('P_ref');
+% Max allowed (scaled) deviation of instantaneous power from P_ref during
+% reel-out, for the optional hard bound in the loop. Scaled units: 1.0 ==
+% (power_max - power_min); e.g. 0.05 == +-0.05 * (power_max - power_min) in
+% Watts. Tune to trade off flatness vs feasibility/energy.
+dP_max = 0.05;
+
 % Define time as a decision variable (to be optimized)
 T = MX.sym('T');
 % Create multiple shooting intervals
@@ -180,10 +207,6 @@ Xi = X0;
 Zi = Zk;
 J = 0;   % running cost
 E = 0;   % mechanical energy E(T)/T -> terminal cost
-E_rms = 0;
-P_sum = 0;
-P_sumSq = 0;
-Jp = 0;
 for k=0:N-1
 
     % New NLP variable for the control
@@ -210,56 +233,73 @@ for k=0:N-1
     end
     w0 = [w0;  xi_scaled(:,k+2)];
 
+    Z0 = Zk; % algebraic variables at the left node of this interval (node k)
     Zk = MX.sym(['Z_' num2str(k+1)],Nz);
     w = {w{:}, Zk};
     lbw = [lbw;  zeros(Nz,1)];
     ubw = [ubw;  ones(Nz,1)];
     w0 = [w0;  zi_scaled(:,k+2)];
 
-    [Pk, omega_dot, v_dot, lift_force, winch_acc, alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h);
+    [Pk, omega_dot, v_dot, lift_force, winch_acc, alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Z0, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h);
 
     % cost function
     beta_scaled = si_to_scaled(beta, ocp_bounds.beta_min, ocp_bounds.beta_max);
     alpha_scaled = si_to_scaled(alpha, ocp_bounds.alpha_min, ocp_bounds.alpha_max);
-    J =  J +  h .* symbolic_funcs.cost(Xk, Zk, Uk, alpha_scaled, beta_scaled, omega_dot, v_dot, lift_force, winch_acc, Phi, xi_scaled(:,k+2), k, floor(params_num.sim.reel_out_time*params_num.sim.Nt));
+    J =  J +  h .* symbolic_funcs.cost(Xk, Zk, Uk, alpha_scaled, beta_scaled, omega_dot, v_dot, lift_force, winch_acc, Phi, xi_scaled(:,k+2));
     E = E + h * Pk;
-%     E_rms = E_rms + h * Pk^2;
 
-    if k > 1 && k <= floor(params_num.sim.reel_out_time*params_num.sim.Nt)
-        dP = (Pk - P_prev)/h;
-        Jp = Jp + dP^2;
+    % Flat traction power: pull the node power towards P_ref over the reel-out window.
+    if  k <= floor(params_num.sim.reel_out_time*params_num.sim.Nt)
+        J = J + h * 350 * (Pk - P_ref)^2;
+        % Hard bound: instantaneous power may not deviate from P_ref
+        % by more than dP_max (scaled), enforced at every node in the
+        % reel-out window.
+        % g = {g{:}, vertcat(Pk - P_ref)};
+        % lbg = [lbg; -dP_max];
+        % ubg = [ubg; dP_max];
+        % equality = [equality; false(1, 1)];
     end
-%     if  k <= floor(params_num.sim.reel_out_time*params_num.sim.Nt) && mod(k, 5) == 0 
-%         P_sum  = P_sum +  Pk;
-%         P_sumSq = P_sumSq + Pk^2;
-%     end
     X0 = Xk;
-    P_prev = Pk;
-    if k ==1 
-        P_0 = P_prev;
-    end
 end
-% P_count = floor(floor(params_num.sim.reel_out_time*params_num.sim.Nt)/5) + 1;
-% P_mean = P_sum / P_count;
-% P_var  = (P_sumSq / P_count) - P_mean^2;
 % add mayer cost function (energy and time)
-J = J - 90.10 * (1-Phi(3))* E + 180 * (1 - Phi(2)) * Jp + 10.25 * (T_sim - params_num.sim.Tf)^2; % add terminal cost
+J = J - 95 * E + 1.25 * (T_sim - params_num.sim.Tf)^2; % add terminal cost
 
 % periodicty constraint
-if params_num.sim.path_type == 8
-    % To fly lemniscate
-    g = {g{:}, vertcat(Xk - Xi)};
-    lbg = [lbg; [zeros(Nx,1)]];
-    ubg = [ubg; [zeros(Nx,1)]];
-    equality = [equality; true(Nx, 1)];
-else
-    % To fly circule
-    g = {g{:}, (vertcat(Xk(1:10) - Xi(1:10), Xk(11) - (si_to_scaled(scaled_to_si(Xi(11),x_L(11),x_U(11)) - 2*pi*params_num.sim.winding_number,x_L(11),x_U(11))) , Xk(12:end) - Xi(12:end)))}; % CCW
-%      g = {g{:}, (vertcat(Xk(1:10) - Xi(1:10), Xk(11) - (si_to_scaled(scaled_to_si(Xi(11),x_L(11),x_U(11)) + 2*pi*params_num.sim.winding_number,x_L(11),x_U(11))) , Xk(12:end) - Xi(12:end)))}; %CW
-    lbg = [lbg; [zeros(Nx,1)]];
-    ubg = [ubg; [zeros(Nx,1)]];
-    equality = [equality; [true(Nx, 1)]];
-end
+% Attitude periodicity is imposed on the RELATIVE quaternion, not by
+% componentwise equality. Reason: the quaternion rows of the ODE defects are
+% exactly norm-preserving (Cayley midpoint, see model_for_optimization.m), so
+% ||q_end|| == ||q_start|| already holds through the defect chain. A full
+% 4-component equality q_end - s*q_start = 0 would then contain exactly one
+% redundant row -- dotting it with (q_end + s*q_start) reproduces
+% ||q_end||^2 - ||q_start||^2, which the defects already pin to zero -- making
+% the constraint Jacobian rank-deficient at every feasible point (LICQ
+% violation, same pathology as the removed per-node norm constraints).
+% Constraining only the VECTOR PART of conj(q_start) (x) q_end (3 rows)
+% removes precisely that redundant direction: together with the norm chain and
+% the node-0 unit-norm constraint it forces q_end = +/- q_start -- the same
+% physical attitude either way (SU(2) double-covers SO(3): after N full loops
+% a continuously integrated quaternion returns to (-1)^N * q_start). The
+% branch is selected by the initial guess, which path_init builds to satisfy
+% q_end = (-1)^winding_number * q_start to machine precision. This form needs
+% no yaw unwrap and no explicit sign flip, and is valid for BOTH the circle
+% (net 2*pi*winding_number heading sweep) and the lemniscate (net ~0 sweep).
+quatIdx  = [9, 10, 11, 15];
+otherIdx = setdiff(1:Nx, quatIdx);
+Xi_si_p = scaled_to_si(Xi, x_L, x_U); % first node, SI
+Xk_si_p = scaled_to_si(Xk, x_L, x_U); % last node, SI
+qa0 = Xi_si_p(15); qav = Xi_si_p(9:11); % q_start [q0; q1;q2;q3]
+qb0 = Xk_si_p(15); qbv = Xk_si_p(9:11); % q_end
+q_rel_vec = qa0.*qbv - qb0.*qav - cross(qav, qbv); % vec( conj(q_start) (x) q_end )
+g = {g{:}, vertcat(Xk(otherIdx) - Xi(otherIdx), q_rel_vec)};
+lbg = [lbg; zeros(Nx-1,1)];
+ubg = [ubg; zeros(Nx-1,1)];
+equality = [equality; true(Nx-1, 1)];
+
+% P_ref goes just before T, so T stays the last entry of w (w_opt(end))
+w = {w{:}, P_ref};
+lbw = [lbw; 0];
+ubw = [ubw; 1];
+w0  = [w0;  0.7];
 
 w = {w{:},  T};
 lbw = [lbw; 0];

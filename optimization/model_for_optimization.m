@@ -16,11 +16,14 @@
 % Date: June 14, 2025
 % Last Modified: June 14, 2025
 
-function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h)
+function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, lbg, ubg, equality] = model_for_optimization(symbolic_funcs, Xk, X0, Uk, Zk, Z0, Phi, g, lbg, ubg, params_num, paramsColumnVec, ocp_bounds, equality, h)
 
 %
 % This function sets up the constraints for the nonlinear programming problem.
 % It includes model dynamics (ODE), algebraic constraints, and various path and operational limits.
+% The ODE defects use the implicit MIDPOINT rule (2nd order, time-symmetric,
+% no artificial numerical dissipation -- important because the objective
+% integrates mechanical power, which plain implicit Euler biases at O(h)).
 %
 % Inputs:
 %   symbolic_funcs  - Structure containing symbolic CasADi functions for model components.
@@ -28,6 +31,8 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
 %   X0              - CasADi symbolic variable for states at time step k.
 %   Uk              - CasADi symbolic variable for control inputs at time step k.
 %   Zk              - CasADi symbolic variable for algebraic states at time step k+1.
+%   Z0              - CasADi symbolic variable for algebraic states at time step k
+%                     (needed to evaluate the tether force at the interval midpoint).
 %   Phi             - CasADi symbolic variable for homotopy parameters.
 %   g               - Cell array of CasADi symbolic expressions for constraints (updated).
 %   lbg             - Numeric array of lower bounds for constraints (updated).
@@ -39,12 +44,13 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
 %   h               - Step size for the current interval.
 %
 % Outputs:
-%   Pk              - Scaled power output.
+%   Pk              - Scaled power output at the right node (path constraint
+%                     and energy/flatness quadrature in building_NLP.m).
 %   omega_dot       - Scaled angular accelerations.
 %   lift_force      - Calculated lift force.
 %   winch_acc_scaled- Scaled winch acceleration.
-%   alpha           - Angle of attack (SI units).
-%   beta            - Sideslip angle (SI units).
+%   alpha           - Angle of attack at the interval midpoint (SI units).
+%   beta            - Sideslip angle at the interval midpoint (SI units).
 %   g               - Updated cell array of CasADi symbolic expressions for constraints.
 %   lbg             - Updated numeric array of lower bounds for constraints.
 %   ubg             - Updated numeric array of upper bounds for constraints.
@@ -55,7 +61,7 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
     baseWindSpeed = params_num.env.wind.base_velocity;
 
     % Extract dimensions
-    Nx = params_num.Nx;    % Number of states (e.g., x(1:2) -> winch, x(3:14) -> ap4)
+    Nx = params_num.Nx;    % Number of states (x(1:2) -> winch, x(3:15) -> kite)
     Nz = params_num.Nz;    % Number of algebraic states (e.g., [Magnitude, el, az])
     Nu = params_num.Nu;    % Number of control inputs (according to the chosen control mode)
 
@@ -70,12 +76,6 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
     winch_acc_max = ocp_bounds.winch_acc_max;
     kite_acc_min = ocp_bounds.kite_acc_min;
     kite_acc_max = ocp_bounds.kite_acc_max;
-    pos_W_x_min = ocp_bounds.pos_W_x_min;
-    pos_W_x_max = ocp_bounds.pos_W_x_max;
-    pos_W_y_min = ocp_bounds.pos_W_y_min;
-    pos_W_y_max = ocp_bounds.pos_W_y_max;
-    pos_W_z_min = ocp_bounds.pos_W_z_min;
-    pos_W_z_max = ocp_bounds.pos_W_z_max;
     power_min = ocp_bounds.power_min;
     power_max = ocp_bounds.power_max;
 
@@ -90,36 +90,34 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
     X0_si = scaled_to_si(X0, x_L, x_U);
     Uk_si = scaled_to_si(Uk, u_L, u_U);
     Zk_si = scaled_to_si(Zk, z_L, z_U);
+    Z0_si = scaled_to_si(Z0, z_L, z_U);
     Xk_si = scaled_to_si(Xk, x_L, x_U);
 
+    % Interval-midpoint state and algebraic values for the implicit-midpoint
+    % integrator. z at the midpoint is the average of the two node values --
+    % using only Zk here would degrade the scheme back to 1st order through
+    % the tether-force coupling.
+    X_mid_si = 0.5 .* (X0_si + Xk_si);
+    Z_mid_si = 0.5 .* (Z0_si + Zk_si);
+
     % Get kite data and tether dynamics
-    % pos_W: position of kite in wind frame
     % M_OB: rotation matrix from body frame to world frame
-    [~, pos_W, ~, M_OB, ~, ~] = symbolic_funcs.kite_data(Xk_si, paramsColumnVec);
+    % (pos_W is not needed here: the position states x(12:14) ARE the
+    % wind-frame Cartesian position, and the flight-region limits are plain
+    % box bounds on those decision variables -- see system_OCP_bounds.m. The
+    % former pos_W path constraints would be exactly redundant with them.)
+    [~, ~, M_OB] = symbolic_funcs.kite_data(Xk_si, paramsColumnVec);
+    % Algebraic (tether) constraint is enforced ONCE per node: the right node
+    % of each interval here, node 0 in building_NLP.m. Do NOT also enforce it
+    % at the left node -- every interior node is the right node of one
+    % interval and the left node of the next, so that duplicates the rows and
+    % makes the constraint Jacobian rank-deficient (LICQ violation). With
+    % alg_eq = 0 holding at both nodes, the averaged Z_mid below matches the
+    % exact midpoint algebraic value to O(h^2), which is all the 2nd-order
+    % midpoint scheme needs.
     [alg_eq, T_kite, ~] = symbolic_funcs.tether_dynamics(Xk_si, Zk_si, paramsColumnVec);
     tether_forces.kite = T_kite;
     tether_forces.winch = Zk_si(1);
-
-    % Constraints on kite position in the world frame
-   
-    % Note: The first position constraint on pos_W(1) is commented out.
-    g = {g{:}, si_to_scaled(pos_W(1), pos_W_x_min, pos_W_x_max)};
-    lbg = [lbg; 0];
-    ubg = [ubg; 1];
-    equality = [equality; false(1, 1)]; 
-                                     
-
-    % Constraint on the y-position of the kite based on path type
-    g = {g{:}, si_to_scaled(pos_W(2), pos_W_y_min , pos_W_y_max)};
-    lbg = [lbg; 0];
-    ubg = [ubg; 1];
-    equality = [equality; false(1, 1)];
-
-    % Constraint on the z-position (altitude) of the kite
-    g = {g{:}, si_to_scaled(pos_W(3), pos_W_z_min, pos_W_z_max)}; %160
-    lbg = [lbg; 0];
-    ubg = [ubg; 1];
-    equality = [equality; false(1, 1)];
 
     % Tether-fuselage contact avoidance constraints
     if params_num.sim.ablation_study == 0
@@ -141,8 +139,10 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
         equality = [equality; false(1, 1)];
     end
 
-    % Calculate aerodynamic variables (apparent wind speed, angle of attack, sideslip angle)
-    [Va, alpha, beta] = symbolic_funcs.aerodynamics_vars(X0_si, paramsColumnVec);
+    % Calculate aerodynamic variables (apparent wind speed, angle of attack,
+    % sideslip angle) at the interval midpoint, where the aerodynamic forces
+    % enter the dynamics.
+    [Va, alpha, beta] = symbolic_funcs.aerodynamics_vars(X_mid_si, paramsColumnVec);
 
     % Constraints on aerodynamic variables
     g = {g{:}, si_to_scaled(Va, v_app_min, v_app_max)};
@@ -159,7 +159,13 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
     ubg = [ubg; 1];
     equality = [equality; false(1, 1)];
 
-    % Constraint on generated power
+    % Constraint on generated power (path bound at the right NODE).
+    % NOTE: keep the bound, the energy quadrature and the flatness penalty
+    % (building_NLP.m) all on NODE power. Midpoint power r*Z_mid(1)*X_mid(2)
+    % is built from averages of adjacent nodes, so an odd-even (Nyquist) node
+    % oscillation cancels out of it -- with any of these terms evaluated at
+    % the midpoint the optimizer exploits that blind spot (bang-bang winch
+    % acceleration, sawtooth node power invisible to the objective).
     Pk_si = params_num.winch.radius * Zk_si(1) * Xk_si(2); % Power in SI units
     Pk = si_to_scaled(Pk_si, power_min, power_max); % Scale power
     g = {g{:}, vertcat(Pk)};
@@ -175,8 +181,12 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
         cs_defl = Uk_si(8:10);   % Control surface deflections
         F_prop_B = Uk_si(end);   % Propeller force
 
-        % Enforce that F_aero_B and M_aero_B come from the aerodynamic model
-        [F_a_B_expr,  M_a_B_expr] = symbolic_funcs.F_M_aero(Xk_si, cs_defl, paramsColumnVec);
+        % Enforce that F_aero_B and M_aero_B come from the aerodynamic model.
+        % Evaluated at the MIDPOINT state: these forces enter the dynamics rhs
+        % at X_mid, so tying them to the aero model at the right node would
+        % inject an O(h) stage error and degrade the midpoint scheme to 1st
+        % order. (cs_defl is a per-interval control, i.e. its stage value.)
+        [F_a_B_expr,  M_a_B_expr] = symbolic_funcs.F_M_aero(X_mid_si, cs_defl, paramsColumnVec);
         g = {g{:}, (F_aero_B - F_a_B_expr)./ abs((u_U(2:4) - u_L(2:4))/2)}; % Force residuals
         lbg = [lbg; zeros(3,1)];
         ubg = [ubg; zeros(3,1)];
@@ -186,8 +196,8 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
         ubg = [ubg; zeros(3,1)];
         equality = [equality; true(3, 1)];
 
-        % Euler integration for ODE
-        rhs = vertcat(symbolic_funcs.winch_dynamics(Xk_si, M_winch, Zk_si(1), paramsColumnVec), symbolic_funcs.kite_dynamics(Xk_si, Zk_si, F_aero_B, M_aero_B, F_prop_B, paramsColumnVec));
+        % Implicit-midpoint integration for ODE (dynamics at the averaged state)
+        rhs = vertcat(symbolic_funcs.winch_dynamics(X_mid_si, M_winch, Z_mid_si(1), paramsColumnVec), symbolic_funcs.kite_dynamics(X_mid_si, Z_mid_si, F_aero_B, M_aero_B, F_prop_B, paramsColumnVec));
         ode_eq = Xk_si - X0_si - h .* rhs;
 
     elseif params_num.ctrl_mode == 2 % Fictitious force and torque control
@@ -197,8 +207,8 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
         F_aero_B = zeros(3,1);   % Aerodynamic force is zero in this mode
         M_aero_B = zeros(3,1);   % Aerodynamic moment is zero in this mode
 
-        % Euler integration for ODE with fictitious forces
-        rhs = vertcat(symbolic_funcs.winch_dynamics(Xk_si, M_winch, Zk_si(1), paramsColumnVec), symbolic_funcs.kite_dynamics(Xk_si, Zk_si, F_fict_B, M_fict_B, 0, paramsColumnVec));
+        % Implicit-midpoint integration for ODE with fictitious forces
+        rhs = vertcat(symbolic_funcs.winch_dynamics(X_mid_si, M_winch, Z_mid_si(1), paramsColumnVec), symbolic_funcs.kite_dynamics(X_mid_si, Z_mid_si, F_fict_B, M_fict_B, 0, paramsColumnVec));
         ode_eq = Xk_si - X0_si - h .* rhs;
 
     else % Homotopy control (blend of aerodynamic and fictitious forces)
@@ -210,8 +220,10 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
         F_aero_B = Uk_si(12:14); % Actual aerodynamic force (used for consistency constraints)
         M_aero_B = Uk_si(15:17); % Actual aerodynamic moment (used for consistency constraints)
 
-        % Enforce that F_aero_B and M_aero_B come from the aerodynamic model
-        [F_a_B_expr,  M_a_B_expr] = symbolic_funcs.F_M_aero(Xk_si, cs_defl, paramsColumnVec);
+        % Enforce that F_aero_B and M_aero_B come from the aerodynamic model.
+        % Evaluated at the MIDPOINT state -- same reasoning as ctrl_mode 1:
+        % the blended force enters the rhs at X_mid.
+        [F_a_B_expr,  M_a_B_expr] = symbolic_funcs.F_M_aero(X_mid_si, cs_defl, paramsColumnVec);
         g = {g{:}, (F_aero_B - F_a_B_expr) ./ abs((u_U(12:14) - u_L(12:14))/2)}; % Force residuals
         lbg = [lbg; zeros(3,1)];
         ubg = [ubg; zeros(3,1)];
@@ -227,13 +239,26 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
         % Apply homotopy to propeller force based on Phi(2)
         F_hat_p_B = Phi(2) .* F_prop_B;
 
-        % Euler integration for ODE with blended forces
-        rhs = vertcat(symbolic_funcs.winch_dynamics(Xk_si, M_winch, Zk_si(1), paramsColumnVec), symbolic_funcs.kite_dynamics(Xk_si, Zk_si, F_M_hat_a_B(1:3), F_M_hat_a_B(4:6), F_hat_p_B, paramsColumnVec));
+        % Implicit-midpoint integration for ODE with blended forces
+        rhs = vertcat(symbolic_funcs.winch_dynamics(X_mid_si, M_winch, Z_mid_si(1), paramsColumnVec), symbolic_funcs.kite_dynamics(X_mid_si, Z_mid_si, F_M_hat_a_B(1:3), F_M_hat_a_B(4:6), F_hat_p_B, paramsColumnVec));
         ode_eq = Xk_si - X0_si - h .* rhs;
 
     end
 
-    % Constraint on translational acceleration magnitude
+    % NOTE on the quaternion rows (x9:11 = [q1;q2;q3], x15 = q0): under the
+    % implicit MIDPOINT rule they need no special treatment -- evaluating the
+    % kinematics q_dot = 0.5*Om(w)*q at the averaged state makes those defect
+    % rows read
+    %   q_next - q_prev - (h/4)*Om(w_mid)*(q_prev + q_next) = 0,
+    % which is the Cayley scheme: dotting with (q_prev + q_next) kills the
+    % skew-symmetric Om term identically, so ||q_next|| = ||q_prev|| EXACTLY
+    % for any body rate and any step size. A single unit-norm constraint at
+    % node 0 (building_NLP.m) therefore pins ||q|| = 1 at every node. Under a
+    % plain implicit-EULER defect this is impossible: the step is orthogonal
+    % to q_next, so unit norm at two consecutive nodes forces w = 0 (no
+    % rotation) and the NLP is infeasible for any flying trajectory.
+
+    % Constraint on translational acceleration magnitude (midpoint accelerations)
     trans_acc = rhs(3:5)' * rhs(3:5); % Squared magnitude of translational acceleration
     g = {g{:}, si_to_scaled(trans_acc, kite_acc_min, (kite_acc_max * params_num.env.g)^2)}; % Scaled constraint
     % No lower bound: trans_acc is a square, so a bound at 0 is vacuous, but IPOPT
@@ -253,15 +278,30 @@ function [Pk, omega_dot, v_dot, lift_force, winch_acc_scaled,  alpha, beta, g, l
 
     % Combine algebraic and ordinary differential equation (ODE) constraints
     % These are equality constraints enforcing model dynamics.
-    g = {g{:}, vertcat(alg_eq, ode_eq ./ ((x_U - x_L)))};
+    % NOTE on the alg_eq scaling: the residual is eq = p - p0, i.e. all three
+    % components are POSITION mismatches in meters (W-frame x,y,z; see
+    % tether_quasi_static_single_shooting.m). They correspond axis-for-axis to
+    % the Cartesian position states x(12:14) (same W-frame axes, same units),
+    % so scale by those state ranges -- the same convention as the neighboring
+    % ode_eq ./ (x_U - x_L) term (and the node-0 copy in building_NLP.m).
+    alg_scale = x_U(12:14) - x_L(12:14); % per-axis flight-region extent (m)
+    g = {g{:}, vertcat(alg_eq ./ alg_scale, ode_eq ./ (x_U - x_L))};
     lbg = [lbg; zeros(Nx+Nz,1)];
     ubg = [ubg; zeros(Nx+Nz,1)];
     equality = [equality; true(Nx+Nz, 1)];
 
+    % NOTE: deliberately NO per-node unit-norm constraint on the quaternion.
+    % The midpoint defect propagates ||q|| EXACTLY from node to node (see the
+    % note above), so the single node-0 constraint suffices. Re-adding a norm
+    % constraint per node would be exactly redundant with the quaternion
+    % defect rows and make the constraint Jacobian rank-deficient (LICQ
+    % violation -> exploding dual variables, unbounded Hessian regularization,
+    % MUMPS failures).
+
     % Calculate and scale angular velocity derivatives and lift force
-    v_dot = si_to_scaled(rhs(3:5), -kite_acc_max * params_num.env.g, kite_acc_max * params_num.env.g); 
+    v_dot = si_to_scaled(rhs(3:5), -4*params_num.env.g, 4*params_num.env.g); % range the v_dot cost weight is tuned for (as in awes_dms)
     omega_dot = si_to_scaled(rhs(6:8), -0.5 * ones(3,1), 0.5 * ones(3,1)); % Scaled angular accelerations
-    
-    lift_force = -F_aero_B(1)*sin(alpha) - F_aero_B(3)*cos(alpha); % Lift force calculation
+
+    lift_force = -F_aero_B(1)*sin(alpha) - F_aero_B(3)*cos(alpha); % Lift force calculation (midpoint stage)
 
 end

@@ -12,24 +12,22 @@ function dx = calc_ap4_dynamic(x, F_M_a_B, F_p_B, vel_k_W, F_t_W, params_sym)
 %    Torques_B  - Roll, pitch and yaw moments in body reference frame
 %    vel_k_W    - Kinetic velocity in wind reference frame
 %    omega_OB_B - Roll, pitch and yaw rates
-%    longlat    - Longtitude, latitude
-%    EULER      - Euler angles
-%    h_tau      - Height in tau reference frame
+%    q0,qv      - Quaternion scalar/vector parts (attitude)
+%    pos_W      - Kite position in the wind frame W (Cartesian, m)
 %
 % Outputs:
 %    vel_K_B_dot    - Rate of change in kinetic velocity in body reference
 %                     frame
 %    M_OB           - Rotation matrix from body to inertial reference frame
 %    omega_OB_B_dot - Roll, pitch and yaw accellerations
-%    longlat_dot    - Rate of change of longtitude, latitude
-%    eta_EULER_dot	- Rate of change of euler angles
-%    h_tau_dot      - Rate of change of height in tau reference frame
+%    q_dot          - Rate of change of the attitude quaternion [q1;q2;q3;q0]
+%    pos_W_dot      - Rate of change of the wind-frame position (= vel_k_W)
 %
 %
 % Author: Sebastian Rapp, Ph.D., Revised by: Dylan Eijkelhof, M.Sc.
 % Delft University of Technology
 % email address: d.eijkelhof@tudelft.nl
-% edited by: Omid Heydarnia 
+% edited by: Omid Heydarnia
 % Email: omid.heydarnia@ugent.be
 % Last Modified: June 12, 2025
 
@@ -44,30 +42,17 @@ Jxz = params_sym.kite.Jxz;
 
 % x(1:2) are winch states [rotation_angle, rotation_velocity]
 v_k_B       = x(3:5);
-omega_OB_B  = x(6:8);   
-EULER       = x(9:11);
-longlat     = x(12:13);
-h_tau       = x(14); 
+omega_OB_B  = x(6:8);
+qv          = x(9:11);
+% x(12:14) is the kite position in the wind frame W (Cartesian, meters).
+% Its propagation is handled at the bottom of this file; the position states
+% themselves do not enter the force/moment balance.
+q0          = x(15);
 
 F_a_B       = F_M_a_B(:,1);
 T_a_B       = F_M_a_B(:,2);
 
-
-c_psi = cos(EULER(3));
-s_psi = sin(EULER(3));
-
-c_theta = cos(EULER(2));
-s_theta = sin(EULER(2));
-
-c_phi = cos(EULER(1));
-s_phi = sin(EULER(1)); 
-
-M_OB = [ c_psi*c_theta, c_psi*s_theta*s_phi-s_psi*c_phi, c_psi*s_theta*c_phi+s_psi*s_phi;
-         s_psi*c_theta, s_psi*s_theta*s_phi+c_psi*c_phi, s_psi*s_theta*c_phi-c_psi*s_phi;
-        -s_theta, c_theta*s_phi, c_theta*c_phi];
-
-long = longlat(1);
-lat  = longlat(2);
+M_OB = quat_to_dcm(q0, qv);
 
 F_g_O = [0;0; mass * params_sym.env.g];
 F_t_O = transformFromWtoO( params_sym.env.wind.direction, F_t_W);
@@ -83,15 +68,18 @@ r=omega_OB_B(3);
 
 
 vel_K_B_dot = (1/mass) .* Forces_B - cross(omega_OB_B, v_k_B);
-c_theta = cos(EULER(2));
-s_theta = sin(EULER(2));
 
-c_phi = cos(EULER(1));
-s_phi = sin(EULER(1)); 
+% Quaternion kinematics: q_dot = 0.5 * q (x) [0; omega_OB_B] (Hamilton product).
+% Unlike the Euler-angle kinematics this replaces, this has no 1/cos(theta)
+% singularity at pitch = +/-90 deg. The unit-norm constraint on [q0;qv] is not
+% enforced here (this is just the ODE); it is an NLP equality constraint at
+% node 0 (building_NLP.m), carried to every node by the midpoint defects.
+q1 = qv(1); q2 = qv(2); q3 = qv(3);
 
-eta_EULER_dot = [1 s_phi*s_theta/c_theta c_phi*s_theta/c_theta;
-                 0 c_phi -s_phi; 
-                 0 s_phi/c_theta c_phi/c_theta]*omega_OB_B;
+q0_dot = -0.5*(q1*p + q2*q + q3*r);
+q1_dot =  0.5*(q0*p + q2*r - q3*q);
+q2_dot =  0.5*(q0*q + q3*p - q1*r);
+q3_dot =  0.5*(q0*r + q1*q - q2*p);
 
 
 J = [Jx, 0, Jxz;
@@ -99,28 +87,17 @@ J = [Jx, 0, Jxz;
      Jxz, 0, Jz]; 
 
 omega_OB_B_dot = (J^-1)*(T_a_B - cross(omega_OB_B, mtimes(J,omega_OB_B)));
+
 %% Position propagation
-sin_lat  = sin(lat);
-sin_long = sin(long);
-cos_lat  = cos(lat);
-cos_long = cos(long);
- 
-M_tauW = [-sin_lat*cos_long, -sin_lat*sin_long,cos_lat;
-          -sin_long, cos_long, 0;
-          -cos_lat*cos_long, -cos_lat*sin_long, -sin_lat];
+% Cartesian position in the wind frame W: pos_W_dot = vel_k_W. Like the
+% quaternion kinematics above, this replaces a singular chart -- the former
+% spherical states [long; lat; h_tau] had a 1/(h_tau*cos(lat)) term (blowing
+% up at lat = +/-90 deg, exactly the gimbal-lock analogue for position) and
+% 1/h_tau divisions. These rows are linear in the states, so the implicit
+% midpoint defects in the OCP integrate them without rational-trig error.
+pos_W_dot = vel_k_W;
 
-v_k_tau = M_tauW*vel_k_W;
-
-% the abs(h_tau)->h_tau because it's boundry considered to alsways be positive.
-long_dot = v_k_tau(2)/( h_tau*cos(lat));  
-lat_dot  = v_k_tau(1)/h_tau; 
-
-h_tau_dot = -v_k_tau(3);
-
-longlat_dot = [long_dot;
-               lat_dot];
-           
-dx = [vel_K_B_dot; omega_OB_B_dot; eta_EULER_dot; longlat_dot; h_tau_dot];
+dx = [vel_K_B_dot; omega_OB_B_dot; q1_dot; q2_dot; q3_dot; pos_W_dot; q0_dot];
 end
 
 

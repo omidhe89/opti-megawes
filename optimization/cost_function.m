@@ -68,8 +68,6 @@ omega_dot = casadi.SX.sym('omega_dot', 3);     % Angular acceleration vector (sc
 v_dot = casadi.SX.sym('v_dot', 3);     % linear acceleration vector (scaled) for initial cost.
 lift_force = casadi.SX.sym('lift_force', 1);   % Lift force vector (unscaled) for tracking cost.
 winch_acc = casadi.SX.sym('winch_acc', 1);     % Winch acceleration (scaled) for initial cost.
-k =  casadi.SX.sym('k', 1);     % Winch acceleration (scaled) for initial cost.
-thereshold =  casadi.SX.sym('thereshold', 1);     % Winch acceleration (scaled) for initial cost.
 
 
 % Extract actual (unscaled) variables from the input 'vars' struct.
@@ -91,40 +89,38 @@ err = x - xi_scaled;
 if params_num.ctrl_mode == 3
     % In control mode 3, a linear penalty on the sum of homotopy parameters.
     % The coefficient 0.08 'turns on' this cost as phi increases.
-    cost_homotopy = 0.008 * ones(1, params_num.homotopy.phi_numbers) * phi;
+    cost_homotopy = 0.08 * ones(1, params_num.homotopy.phi_numbers) * phi;
+    % --- Tracking Cost Term ---
+    % weights x1..x15; x12:14 = W-frame position (x,y,z) and x15 = q0
+    cost_tracking = err' * 1.05 * diag([0, 0.000, 1.5, 0.000 * ones(1, 2), 0.000 * ones(1, 3), 0.000 * ones(1, 3), 0.61551, 0.010551, 0.01505, 0.010]) * err; %- ...
+                %(1 - phi(1)) * 3.5 * (lift_force_scaled' * lift_force_scaled);
 else
-    % For other control modes, the homotopy cost is zero, implying no homotopy
-    % continuation is being applied to guide the optimization based on phi.
+    % For other control modes, the homotopy and tracking costs are zero, implying
+    % no homotopy continuation is being applied to guide the optimization.
     cost_homotopy = 0;
+    cost_tracking = 0;
 end
 
 % --- Initialization Cost Term ---
-cost_init = omega_dot' * 15.5 * diag([1.3525, 1.3525, 1.5525]) * omega_dot + ...
-            v_dot' * 6.5 * diag([1.9525, 0.6525, 0.6525]) * v_dot + ...
-            5.500 * beta_scaled^2; % + 0.05000 * winch_acc^2;%  - 0.8* x(1)^2; + ...
-            % ;
+cost_init = omega_dot' * 25.5 * diag([1.3525, 1.6525, 1.5525]) * omega_dot + ...
+            v_dot' * 7.5 * diag([1.9525, 0.6525, 0.6525]) * v_dot + ...
+            5.500 * beta_scaled^2 ;% + 0.5000 * winch_acc^2 - 0.8* x(1)^2; + ...
 
-% --- Tracking Cost Term ---
-cost_tracking = err' * 2.05 * diag([0, 0.000, 0, 0.000 * ones(1, 2), 0.000 * ones(1, 3), 0.000 * ones(1, 3), 0.91551, 0.910551, 0.022505]) * err; %- ...
-                %(1 - phi(1)) * 3.5 * (lift_force_scaled' * lift_force_scaled);
-
-                
 % --- Power Cost Term ---
 % This term aims to maximize the generated power.
 P = params_num.winch.radius * z(1) * x(2);
-% P = u(1) * x(2);
-cost_power = -30 * P; %(1 - tanh(1.5*k - thereshold)) *
+cost_power = -40 * P;
 
 % --- Total Objective Function (J) ---
-J = cost_init + phi(3) * cost_tracking + (1 - phi(2)) * (cost_power) + cost_homotopy;
+J = cost_init + phi(2) * cost_tracking + phi(3) * cost_power + cost_homotopy;
 
 % Create a CasADi Function object for the cost.
 % This allows the cost function to be efficiently evaluated within the
 % optimization solver. The inputs and outputs are explicitly defined.
 cost = casadi.Function('cost', ...
-                       {x, z, u, alpha_scaled, beta_scaled, omega_dot, v_dot, lift_force, winch_acc, phi, xi_scaled, k, thereshold}, ...
+                       {x, z, u, alpha_scaled, beta_scaled, omega_dot, v_dot, lift_force, winch_acc, phi, xi_scaled}, ...
                        {J}, ...
-                       {'x_scaled', 'z_scaled', 'u_scaled', 'alpha_scaled', 'beta_scaled', 'omega_dot_scaled', 'v_dot_scaled', 'lift_force_unscaled', 'winch_acc_scaled', 'phi_parameters', 'xi_scaled_reference', 'k', 'thereshold'}, ...
+                       {'x_scaled', 'z_scaled', 'u_scaled', 'alpha_scaled', 'beta_scaled', 'omega_dot_scaled', 'v_dot_scaled', 'lift_force_unscaled', 'winch_acc_scaled', 'phi_parameters', 'xi_scaled_reference'}, ...
                        {'J'}); % Output name for the objective function.
 
 end
